@@ -28,11 +28,8 @@ jobs:
         with:
           version: 2.84.2
 
-      - name: Initialize local Supabase configuration
-        run: supabase init
-
       - name: Start from an empty Supabase database
-        run: supabase db start
+        run: supabase start
 
       - name: Replay every migration from scratch
         run: supabase db reset --no-seed
