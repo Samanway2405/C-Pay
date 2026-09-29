@@ -21,15 +21,18 @@ USDC_ASSET_ISSUER=GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5
 - `SPONSOR_SECRET`: secret seed for the account that sponsors reserves and pays fees
 - `DISTRIBUTION_SECRET`: secret seed for the hot distribution account
 - `RELAYER_AUTH_REQUIRED`: set to `true` for production/public-network deployments
-- `SUPABASE_JWT_SECRET`: required for legacy HS256 Supabase JWT verification when relayer auth is enabled, unless using Supabase Auth API validation with `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`
-- `SUPABASE_URL`: optional; enables persistent Add Money claim logging/cooldowns and ledger ingestion
-- `SUPABASE_SERVICE_ROLE_KEY`: optional; required with `SUPABASE_URL` for relayer-only writes
+- `SUPABASE_JWT_SECRET`: optional legacy HS256 token verification; when omitted, the Supabase Auth API validates tokens
+- `SUPABASE_URL`: required with `SUPABASE_SERVICE_ROLE_KEY` whenever `RELAYER_AUTH_REQUIRED=true`
+- `SUPABASE_SERVICE_ROLE_KEY`: required with `SUPABASE_URL` whenever `RELAYER_AUTH_REQUIRED=true`
 - `ENABLE_TESTNET_FAUCET`: legacy testnet-only escape hatch; defaults to `false` and is ignored on the public network
 - `LEDGER_INGEST_ENABLED`: `true` to enable background Horizon payment operation ingestion
 - `INGEST_POLL_INTERVAL_MS`: poll interval in ms (default: `5000`)
 - `INGEST_PENDING_TIMEOUT_MS`: timeout after which unconfirmed pending transactions are marked failed (default: `300000`)
 
 Keep issuer secrets offline. The relayer needs sponsor and capped distribution secrets for Stellar payments.
+With authentication enabled, startup also probes `wallet_bindings` and exits before
+listening if the table is missing or unreachable. Supabase-free development is
+available only with `RELAYER_AUTH_REQUIRED=false`.
 
 ## Endpoints
 

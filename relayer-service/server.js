@@ -170,30 +170,37 @@ app.post('/accounts/prepare', requireAuthenticatedUser, async (req, res) => {
       });
     }
 
-    if (isSupabasePersistenceEnabled()) {
-      const existingOwner = await resolveWalletOwner(accountId);
-      if (existingOwner && existingOwner !== authUid) {
+    const ownerResult = await resolveWalletOwner(accountId);
+    if (!ownerResult.configured || !ownerResult.ok) {
+      return sendWalletOwnershipUnavailable(res, ownerResult.error);
+    }
+
+    if (ownerResult.owner && ownerResult.owner !== authUid) {
+      return res.status(403).json({
+        error: 'You are not authorized to prepare this wallet (already bound to another user)',
+        code: 'WALLET_OWNERSHIP_DENIED',
+      });
+    }
+
+    if (!ownerResult.owner) {
+      const walletsResult = await resolveUserWallets(authUid);
+      if (!walletsResult.configured || !walletsResult.ok) {
+        return sendWalletOwnershipUnavailable(res, walletsResult.error);
+      }
+
+      if (walletsResult.wallets.length >= config.maxSponsoredAccountsPerUser) {
         return res.status(403).json({
-          error: 'You are not authorized to prepare this wallet (already bound to another user)',
-          code: 'WALLET_OWNERSHIP_DENIED',
+          error: `Maximum sponsored accounts limit (${config.maxSponsoredAccountsPerUser}) reached for this user`,
+          code: 'SPONSORSHIP_LIMIT_EXCEEDED',
+          maxAccounts: config.maxSponsoredAccountsPerUser,
         });
       }
 
-      if (!existingOwner) {
-        const ownedWallets = await resolveUserWallets(authUid);
-        if (ownedWallets && ownedWallets.length >= config.maxSponsoredAccountsPerUser) {
-          return res.status(403).json({
-            error: `Maximum sponsored accounts limit (${config.maxSponsoredAccountsPerUser}) reached for this user`,
-            code: 'SPONSORSHIP_LIMIT_EXCEEDED',
-            maxAccounts: config.maxSponsoredAccountsPerUser,
-          });
-        }
-
-        try {
-          await bindWalletToUser(authUid, accountId);
-        } catch (err) {
-          console.error('Failed to bind wallet:', err.message);
-        }
+      try {
+        await bindWalletToUser(authUid, accountId);
+      } catch (error) {
+        console.error('Failed to bind wallet:', error.message);
+        return sendWalletOwnershipUnavailable(res, error, 'WALLET_BINDING_FAILED');
       }
     }
   }
@@ -495,28 +502,57 @@ app.use((error, _req, res, _next) => {
   });
 });
 
-const relayerHttpServer = app.listen(PORT, '0.0.0.0', () => {
+let relayerHttpServer = null;
+
+async function startRelayer() {
+  if (config.authRequired) {
+    await assertWalletBindingsReachable();
+  }
+
+  relayerHttpServer = await new Promise((resolve, reject) => {
+    const listener = app.listen(PORT, '0.0.0.0');
+    listener.once('error', reject);
+    listener.once('listening', () => resolve(listener));
+  });
+  relayerHttpServer.ref();
+
   console.log(`C-Pay Stellar relayer listening on port ${PORT}`);
   console.log(`Network: ${config.networkName}`);
   console.log(`Sponsor: ${sponsorKeypair.publicKey()}`);
   console.log(`Distribution: ${distributionKeypair.publicKey()}`);
-});
-relayerHttpServer.ref();
 
-// Start ledger ingest worker on startup (non-blocking)
-if (config.ledgerIngestEnabled && ingestWorker.isConfigured) {
-  ingestWorker.start('stream').catch(err => {
-    console.warn('Ingest worker startup warning:', err.message);
+  // Start ledger ingest worker on startup (non-blocking)
+  if (config.ledgerIngestEnabled && ingestWorker.isConfigured) {
+    ingestWorker.start('stream').catch(err => {
+      console.warn('Ingest worker startup warning:', err.message);
+    });
+  }
+
+  // Clean up expired persisted state on startup (non-blocking)
+  cleanExpiredPersistedState().catch(err => {
+    console.error('Startup cleanup of persisted state failed:', err.message);
   });
+  setInterval(() => cleanExpiredPersistedState().catch(() => {}), 60 * 60 * 1000).unref();
+
+  return relayerHttpServer;
 }
 
-// Clean up expired persisted state on startup (non-blocking)
-cleanExpiredPersistedState().catch(err => {
-  console.error('Startup cleanup of persisted state failed:', err.message);
+const startupPromise = startRelayer();
+startupPromise.catch(error => {
+  console.error('Relayer startup failed:', error.message);
+  if (require.main === module) {
+    process.exitCode = 1;
+  }
 });
-setInterval(() => cleanExpiredPersistedState().catch(() => {}), 60 * 60 * 1000).unref();
 
-module.exports = { app, server: relayerHttpServer, ingestWorker };
+module.exports = {
+  app,
+  get server() {
+    return relayerHttpServer;
+  },
+  startupPromise,
+  ingestWorker,
+};
 
 function loadConfig() {
   const networkName = (process.env.STELLAR_NETWORK || 'testnet').toLowerCase();
@@ -541,8 +577,8 @@ function loadConfig() {
     throw new Error(`USDC_ASSET_ISSUER must be Circle's canonical ${networkName} issuer`);
   }
 
-  if (authRequired && !supabaseJwtSecret && (!supabaseUrl || !supabaseServiceRoleKey)) {
-    throw new Error('SUPABASE_JWT_SECRET or SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY is required when relayer authentication is enabled');
+  if (authRequired && (!supabaseUrl || !supabaseServiceRoleKey)) {
+    throw new Error('SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required when relayer authentication is enabled');
   }
 
   return {
@@ -674,12 +710,13 @@ async function requireAuthenticatedUser(req, res, next) {
 
 /**
  * Resolve the wallet address(es) that belong to an authenticated Supabase user.
- * Returns an array of wallet_address strings from the users table.
- * Returns null when persistence is not configured (ownership check is skipped).
+ * Configuration absence, lookup failure, and a successful empty result are
+ * deliberately distinct so callers cannot turn infrastructure failures into
+ * authorization bypasses.
  */
 async function resolveUserWallets(authUid) {
   if (!isSupabasePersistenceEnabled()) {
-    return null;
+    return { configured: false };
   }
 
   try {
@@ -693,22 +730,26 @@ async function resolveUserWallets(authUid) {
       headers: { Accept: 'application/json' },
     });
     if (!Array.isArray(rows)) {
-      return null;
+      throw new Error('Wallet ownership lookup returned an invalid response');
     }
-    return rows.map(r => r.wallet_address).filter(Boolean);
+    return {
+      configured: true,
+      ok: true,
+      wallets: rows.map(r => r.wallet_address).filter(Boolean),
+    };
   } catch (error) {
     console.warn('Wallet ownership lookup failed:', error.message);
-    return null;
+    return { configured: true, ok: false, error };
   }
 }
 
 /**
  * Resolve the auth user ID that owns a given wallet address.
- * Returns null if unbound or persistence is not configured.
+ * A successful unbound lookup is represented by owner: null.
  */
 async function resolveWalletOwner(walletAddress) {
   if (!isSupabasePersistenceEnabled()) {
-    return null;
+    return { configured: false };
   }
 
   try {
@@ -722,14 +763,29 @@ async function resolveWalletOwner(walletAddress) {
       method: 'GET',
       headers: { Accept: 'application/json' },
     });
-    if (Array.isArray(rows) && rows.length > 0 && rows[0]?.auth_user_id) {
-      return rows[0].auth_user_id;
+    if (!Array.isArray(rows)) {
+      throw new Error('Wallet owner lookup returned an invalid response');
     }
-    return null;
+    return {
+      configured: true,
+      ok: true,
+      owner: rows.length > 0 && rows[0]?.auth_user_id ? rows[0].auth_user_id : null,
+    };
   } catch (error) {
     console.warn('Wallet owner lookup failed:', error.message);
-    return null;
+    return { configured: true, ok: false, error };
   }
+}
+
+function sendWalletOwnershipUnavailable(res, error, code = 'WALLET_OWNERSHIP_UNAVAILABLE') {
+  if (error) {
+    console.warn('Wallet ownership service unavailable:', error.message);
+  }
+  return res.status(503).json({
+    error: 'Wallet ownership service is temporarily unavailable',
+    code,
+    retryable: true,
+  });
 }
 
 /**
@@ -737,6 +793,9 @@ async function resolveWalletOwner(walletAddress) {
  */
 async function bindWalletToUser(authUserId, walletAddress) {
   if (!isSupabasePersistenceEnabled()) {
+    if (config.authRequired) {
+      throw new Error('Wallet persistence is required when authentication is enabled');
+    }
     return;
   }
 
@@ -773,8 +832,8 @@ async function checkSponsorBalanceAlarm() {
  * Build a middleware that verifies the requesting user owns the wallet
  * identified by `walletField` in req.body.
  *
- * When auth is disabled or Supabase persistence is not configured the check
- * is skipped so local development continues to work without a Supabase project.
+ * Only explicit auth-disabled development may skip this check. Authenticated
+ * deployments reject requests when persistence is unavailable or errors.
  *
  * @param {string} walletField - The req.body key that holds the wallet address.
  */
@@ -792,14 +851,13 @@ function requireWalletOwnership(walletField) {
       });
     }
 
-    const ownedWallets = await resolveUserWallets(authUid);
-
-    // When Supabase persistence is not configured, skip the ownership check.
-    if (ownedWallets === null) {
-      return next();
+    const ownershipResult = await resolveUserWallets(authUid);
+    if (!ownershipResult.configured || !ownershipResult.ok) {
+      return sendWalletOwnershipUnavailable(res, ownershipResult.error);
     }
+    const ownedWallets = ownershipResult.wallets;
 
-    if (!ownedWallets || ownedWallets.length === 0) {
+    if (ownedWallets.length === 0) {
       // If we are preparing an account, it might not be bound yet.
       // But we already added the binding to /accounts/prepare.
       return res.status(403).json({
@@ -837,8 +895,11 @@ function requirePathWalletOwnership() {
     if (!authUid) {
       return res.status(401).json({ error: 'Authentication required', code: 'AUTH_REQUIRED' });
     }
-    const ownedWallets = await resolveUserWallets(authUid);
-    if (ownedWallets === null) return next();
+    const ownershipResult = await resolveUserWallets(authUid);
+    if (!ownershipResult.configured || !ownershipResult.ok) {
+      return sendWalletOwnershipUnavailable(res, ownershipResult.error);
+    }
+    const ownedWallets = ownershipResult.wallets;
     const requestedWallet = req.params.accountId;
     if (!ownedWallets.includes(requestedWallet)) {
       return res.status(403).json({
@@ -1309,6 +1370,20 @@ async function cleanExpiredPersistedState() {
     console.log('Expired persisted state cleaned up on startup');
   } catch (error) {
     console.error('Failed to clean expired persisted state:', error.message);
+  }
+}
+
+async function assertWalletBindingsReachable() {
+  if (!isSupabasePersistenceEnabled()) {
+    throw new Error('wallet_bindings requires configured Supabase persistence');
+  }
+
+  const rows = await supabaseRestRequest('wallet_bindings?select=id&limit=1', {
+    method: 'GET',
+    headers: { Accept: 'application/json' },
+  });
+  if (!Array.isArray(rows)) {
+    throw new Error('wallet_bindings startup probe returned an invalid response');
   }
 }
 
