@@ -3,6 +3,8 @@
  * Covers every named error code and the fallback path.
  */
 
+import fs from 'fs';
+import path from 'path';
 import { getPaymentFailureCopy } from '../../utils/paymentFailure';
 
 describe('getPaymentFailureCopy', () => {
@@ -23,24 +25,14 @@ describe('getPaymentFailureCopy', () => {
   });
 
   // ──────────────────────────────────────────────────────
-  // Contract-specific support codes
+  // Wallet ownership support codes
   // ──────────────────────────────────────────────────────
-  test('CONTRACT_MERCHANT_MISSING → merchant not ready, support category', () => {
-    const copy = getPaymentFailureCopy({ code: 'CONTRACT_MERCHANT_MISSING' });
-    expect(copy.errorMessage).toMatch(/merchant/i);
+  test('WALLET_OWNERSHIP_DENIED code → wallet not recognised, support category', () => {
+    const copy = getPaymentFailureCopy({ code: 'WALLET_OWNERSHIP_DENIED' });
+    expect(copy.errorMessage).toBe('Wallet Not Recognised');
+    expect(copy.errorReason).toContain('wallet that does not match your account');
     expect(copy.category).toBe('support');
-  });
-
-  test('CONTRACT_MERCHANT_INACTIVE → merchant inactive, support category', () => {
-    const copy = getPaymentFailureCopy({ code: 'CONTRACT_MERCHANT_INACTIVE' });
-    expect(copy.errorMessage).toMatch(/inactive/i);
-    expect(copy.category).toBe('support');
-  });
-
-  test('CONTRACT_MERCHANT_MISMATCH → QR code mismatch, support category', () => {
-    const copy = getPaymentFailureCopy({ code: 'CONTRACT_MERCHANT_MISMATCH' });
-    expect(copy.errorMessage).toMatch(/mismatch|qr/i);
-    expect(copy.category).toBe('support');
+    expect(copy.errorCode).toBe('WALLET_OWNERSHIP_DENIED');
   });
 
   test('CONTRACT_INTENT_SOURCE_MISMATCH → wallet mismatch, support category', () => {
@@ -139,5 +131,89 @@ describe('getPaymentFailureCopy', () => {
     expect(typeof copy.errorReason).toBe('string');
     expect(copy.errorMessage.length).toBeGreaterThan(0);
     expect(copy.errorReason.length).toBeGreaterThan(0);
+  });
+
+  // ──────────────────────────────────────────────────────
+  // Deleted unreachable codes have no dedicated mapping
+  // ──────────────────────────────────────────────────────
+  test('unreachable merchant/contract codes have no dedicated mapping and fall back', () => {
+    const deletedCodes = [
+      'MERCHANT_OWNERSHIP_DENIED',
+      'CONTRACT_MERCHANT_MISSING',
+      'CONTRACT_MERCHANT_INACTIVE',
+      'CONTRACT_MERCHANT_MISMATCH',
+    ];
+
+    for (const code of deletedCodes) {
+      const copy = getPaymentFailureCopy({ code });
+      expect(copy.errorMessage).toBe('Transaction Failed');
+      expect(copy.errorReason).toContain('The payment could not be completed.');
+    }
+  });
+
+  // ──────────────────────────────────────────────────────
+  // Relayer emission parity & drift prevention
+  // ──────────────────────────────────────────────────────
+  describe('relayer error code mapping parity', () => {
+    const KNOWN_RELAYER_CODES = [
+      'AUTH_REQUIRED',
+      'WALLET_OWNERSHIP_DENIED',
+      'WALLET_OWNERSHIP_UNAVAILABLE',
+      'WALLET_BINDING_FAILED',
+      'SPONSORSHIP_LIMIT_EXCEEDED',
+      'IDEMPOTENCY_IN_FLIGHT',
+      'ADD_MONEY_DISABLED',
+      'ADD_MONEY_PERSISTENCE_UNAVAILABLE',
+      'ADD_MONEY_IN_FLIGHT',
+      'ADD_MONEY_COOLDOWN',
+      'ADD_MONEY_DAILY_CAP_EXCEEDED',
+      'ACCOUNT_NOT_READY',
+      'DISTRIBUTION_LOW_ASSET',
+      'NO_WALLETS_BOUND',
+    ];
+
+    const getRelayerEmittedCodes = (): string[] => {
+      const codes = new Set<string>(KNOWN_RELAYER_CODES);
+      try {
+        const serverJsPath = path.resolve(__dirname, '../../../../relayer-service/server.js');
+        if (fs.existsSync(serverJsPath)) {
+          const source = fs.readFileSync(serverJsPath, 'utf8');
+          const codeMatches = source.matchAll(/code:\s*['"]([A-Z0-9_]+)['"]/g);
+          for (const m of codeMatches) {
+            if (m[1] && m[1] !== 'USDC') {
+              codes.add(m[1]);
+            }
+          }
+          const helperMatches = source.matchAll(/sendWalletOwnershipUnavailable\([^)]*['"]([A-Z0-9_]+)['"]/g);
+          for (const m of helperMatches) {
+            codes.add(m[1]);
+          }
+          const paramMatches = source.matchAll(/code\s*=\s*['"]([A-Z0-9_]+)['"]/g);
+          for (const m of paramMatches) {
+            codes.add(m[1]);
+          }
+        }
+      } catch {
+        // Fallback to KNOWN_RELAYER_CODES if filesystem is restricted
+      }
+      return Array.from(codes);
+    };
+
+    const relayerCodes = getRelayerEmittedCodes();
+
+    test('relayer codes list is not empty and includes WALLET_OWNERSHIP_DENIED', () => {
+      expect(relayerCodes.length).toBeGreaterThan(0);
+      expect(relayerCodes).toContain('WALLET_OWNERSHIP_DENIED');
+      expect(relayerCodes).toContain('AUTH_REQUIRED');
+    });
+
+    test.each(relayerCodes)('relayer code %s has a dedicated user-facing message', (code) => {
+      const copy = getPaymentFailureCopy({ code });
+      expect(copy.errorCode).toBe(code);
+      expect(copy.errorMessage).toBeTruthy();
+      expect(copy.errorReason).toBeTruthy();
+      expect(copy.errorMessage).not.toBe('Transaction Failed');
+      expect(copy.errorReason).not.toContain('The payment could not be completed.');
+    });
   });
 });
