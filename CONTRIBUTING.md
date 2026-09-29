@@ -33,9 +33,19 @@ To contribute code, you'll need to run both the mobile app and the backend relay
 - **Expo Go** app on your iOS/Android device, or an emulator.
 
 ### 2. Supabase Project Setup
-1. Create a new project on [Supabase](https://supabase.com).
-2. Go to **SQL Editor** in your Supabase dashboard and run the migrations located in `App/supabase/migrations/` in order.
-3. Obtain your `Project URL`, `anon public key`, and `service_role key` from Project Settings -> API.
+
+The files in `supabase/migrations/` are the only database schema source. Do not
+apply a separate schema file or the migrations from another directory.
+
+Provision a fresh local database with one command from the repository root:
+
+```bash
+supabase start
+```
+
+This starts the local Supabase stack and applies the complete root migration
+chain in filename order. Obtain the local Project URL, anon key, and service-role
+key from the command output.
 
 ### 3. Environment Configuration
 Clone the repo and install dependencies:

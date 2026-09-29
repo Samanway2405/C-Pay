@@ -1,6 +1,6 @@
 BEGIN;
 
-SELECT plan(7);
+SELECT plan(12);
 
 SELECT has_table(
   'public',
@@ -19,6 +19,57 @@ SELECT hasnt_column(
   'transactions',
   'merchant_id',
   'transactions no longer contains merchant_id'
+);
+
+SELECT has_table(
+  'public',
+  'wallet_bindings',
+  'wallet_bindings exists after a clean provision'
+);
+
+SELECT has_column(
+  'public',
+  'add_money_claims',
+  'auth_user_id',
+  'add_money_claims is keyed by authenticated user'
+);
+
+SELECT ok(
+  NOT EXISTS (
+    SELECT 1
+    FROM information_schema.tables
+    WHERE table_schema = 'public'
+      AND table_name IN ('merchants', 'merchant_qr_codes', 'merchant_contact_verifications')
+  ),
+  'no merchant table survives a clean provision'
+);
+
+SELECT ok(
+  NOT EXISTS (
+    SELECT 1
+    FROM pg_proc
+    JOIN pg_namespace ON pg_namespace.oid = pg_proc.pronamespace
+    WHERE pg_namespace.nspname = 'public'
+      AND pg_proc.proname IN (
+        'get_public_merchant_by_id',
+        'get_public_merchant_by_address',
+        'get_own_merchant_by_wallet',
+        'refresh_merchant_totals',
+        'update_merchant_totals_from_transaction'
+      )
+  ),
+  'no merchant function survives a clean provision'
+);
+
+SELECT ok(
+  NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conrelid = 'public.transactions'::regclass
+      AND contype = 'c'
+      AND pg_get_constraintdef(oid) ILIKE '%merchant%'
+  ),
+  'the transaction type CHECK no longer permits merchant values'
 );
 
 SELECT ok(

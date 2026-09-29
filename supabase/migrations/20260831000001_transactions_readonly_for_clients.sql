@@ -8,8 +8,7 @@
 -- arbitrary tx_hash.
 --
 -- This migration is idempotent and additive: it re-asserts the lockdown from
--- 20260829000001 for environments that were provisioned from the older
--- App/supabase_schema.sql. Existing rows are never touched.
+-- 20260829000001. Existing rows are never touched.
 
 BEGIN;
 
