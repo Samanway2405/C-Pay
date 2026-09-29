@@ -437,7 +437,7 @@ async function horizonRequest<T = any>(path: string): Promise<T> {
   return body as T;
 }
 
-async function relayerRequest<T = any>(
+export async function relayerRequest<T = any>(
   path: string,
   options: RequestInit = {},
   timeoutMs: number = RELAYER_TIMEOUT_MS
