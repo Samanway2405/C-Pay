@@ -30,6 +30,7 @@ import { PILOT_TESTNET_TEXT } from '../utils/pilot';
 import { usePaymentIntent } from '../hooks/usePaymentIntent';
 import { usePaymentSubmission } from '../hooks/usePaymentSubmission';
 import { useRecipientLookup } from '../hooks/useRecipientLookup';
+import { checkTransactionLimit } from '../services/securityLimits';
 
 interface SendMoneyScreenProps {
   navigation: any;
@@ -273,9 +274,17 @@ export const SendMoneyScreen: React.FC<SendMoneyScreenProps> = ({ navigation, ro
   };
 
   // Open the unified review sheet (shared by manual send and scan-to-pay).
-  const handleSendMoney = () => {
+  const handleSendMoney = async () => {
     if (submitting || paymentInProgress.current) return;
     if (!validateInputs()) return;
+
+    // Instant UX feedback against server limits
+    const limitCheck = await checkTransactionLimit(amount);
+    if (!limitCheck.allowed) {
+      AlertManager.alert('Transaction Limit', limitCheck.reason || 'Transaction limit exceeded');
+      return;
+    }
+
     getOrCreateIntent();
     setShowReview(true);
   };
