@@ -134,6 +134,8 @@ export const MAX_PIN_ATTEMPTS = 5;
 export const LOCKOUT_BASE_MS = 30_000; // 30 seconds
 /** Hard ceiling for any single lockout period. */
 export const MAX_LOCKOUT_MS = 60 * 60 * 1000; // 1 hour
+/** Fixed lockout duration used when SecureStore cannot be trusted. */
+const STORAGE_FAILURE_LOCKOUT_MS = MAX_LOCKOUT_MS;
 
 // ─── Local wipe policy ────────────────────────────────────────────────────────
 /**
@@ -222,6 +224,10 @@ export type GetWalletResult =
   | { success: true; wallet: StellarWallet }
   | { success: false; wallet: null; error: WalletOperationError; rawError?: unknown };
 
+export type PinAttemptStateResult =
+  | { status: 'available'; state: PinAttemptState }
+  | { status: 'unknown' };
+
 // ─── In-memory session state ──────────────────────────────────────────────────
 
 let cachedPinHash: string | null = null;
@@ -252,19 +258,19 @@ function getCachedPin(): string | null {
 
 /**
  * Read the current PIN attempt state from SecureStore.
- * Returns a zeroed state if nothing is stored yet.
+ * Returns an available zeroed state if nothing is stored yet.
  */
-export async function getPinAttemptState(): Promise<PinAttemptState> {
+export async function getPinAttemptState(): Promise<PinAttemptStateResult> {
   try {
     const raw = await SecureStore.getItemAsync(PIN_ATTEMPTS_KEY);
-    if (!raw) return { attempts: 0, lockedUntil: 0 };
+    if (!raw) return { status: 'available', state: { attempts: 0, lockedUntil: 0 } };
     const parsed = JSON.parse(raw) as Partial<PinAttemptState>;
-    return {
-      attempts: typeof parsed.attempts === 'number' ? parsed.attempts : 0,
-      lockedUntil: typeof parsed.lockedUntil === 'number' ? parsed.lockedUntil : 0,
-    };
+    if (typeof parsed.attempts !== 'number' || typeof parsed.lockedUntil !== 'number') {
+      return { status: 'unknown' };
+    }
+    return { status: 'available', state: { attempts: parsed.attempts, lockedUntil: parsed.lockedUntil } };
   } catch {
-    return { attempts: 0, lockedUntil: 0 };
+    return { status: 'unknown' };
   }
 }
 
@@ -274,10 +280,10 @@ export async function getPinAttemptState(): Promise<PinAttemptState> {
  */
 export async function recordFailedPinAttempt(): Promise<PinAttemptState> {
   const current = await getPinAttemptState();
-  const attempts = current.attempts + 1;
+  const attempts = current.status === 'available' ? current.state.attempts + 1 : 0;
 
-  let lockedUntil = 0;
-  if (attempts >= MAX_PIN_ATTEMPTS) {
+  let lockedUntil = current.status === 'unknown' ? Date.now() + STORAGE_FAILURE_LOCKOUT_MS : 0;
+  if (current.status === 'available' && attempts >= MAX_PIN_ATTEMPTS) {
     // Extra attempts beyond the threshold double the delay each time.
     const extraAttempts = attempts - MAX_PIN_ATTEMPTS;
     const delay = Math.min(LOCKOUT_BASE_MS * Math.pow(2, extraAttempts), MAX_LOCKOUT_MS);
@@ -285,7 +291,11 @@ export async function recordFailedPinAttempt(): Promise<PinAttemptState> {
   }
 
   const next: PinAttemptState = { attempts, lockedUntil };
-  await SecureStore.setItemAsync(PIN_ATTEMPTS_KEY, JSON.stringify(next));
+  try {
+    await SecureStore.setItemAsync(PIN_ATTEMPTS_KEY, JSON.stringify(next));
+  } catch {
+    return { attempts, lockedUntil: Date.now() + STORAGE_FAILURE_LOCKOUT_MS };
+  }
   return next;
 }
 

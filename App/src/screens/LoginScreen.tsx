@@ -21,6 +21,7 @@ import {
   isLockedOut,
   lockoutRemainingMs,
   MAX_PIN_ATTEMPTS,
+  MAX_LOCKOUT_MS,
   recordFailedPinAttempt,
   shouldWarnAboutWipe,
   shouldWipeWallet,
@@ -64,7 +65,13 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
   // ── Load persisted attempt state on mount ──────────────────────────────────
   useEffect(() => {
     void (async () => {
-      const state = await getPinAttemptState();
+      const result = await getPinAttemptState();
+      if (result.status === 'unknown') {
+        setLockoutMs(MAX_LOCKOUT_MS);
+        startCountdown();
+        return;
+      }
+      const state = result.state;
       setAttemptCount(state.attempts);
       const remaining = lockoutRemainingMs(state);
       if (remaining > 0) {
@@ -79,7 +86,12 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
   const startCountdown = useCallback(() => {
     if (countdownRef.current) return;
     countdownRef.current = setInterval(async () => {
-      const state = await getPinAttemptState();
+      const result = await getPinAttemptState();
+      if (result.status === 'unknown') {
+        setLockoutMs(MAX_LOCKOUT_MS);
+        return;
+      }
+      const state = result.state;
       const remaining = lockoutRemainingMs(state);
       setLockoutMs(remaining);
       if (remaining <= 0) {
@@ -154,7 +166,15 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
 
     try {
       // Re-check lockout state right before verifying (prevents race conditions).
-      const currentState = await getPinAttemptState();
+      const currentResult = await getPinAttemptState();
+      if (currentResult.status === 'unknown') {
+        setLockoutMs(MAX_LOCKOUT_MS);
+        startCountdown();
+        setPin('');
+        setLoading(false);
+        return;
+      }
+      const currentState = currentResult.state;
       if (isLockedOut(currentState)) {
         const remaining = lockoutRemainingMs(currentState);
         setLockoutMs(remaining);
