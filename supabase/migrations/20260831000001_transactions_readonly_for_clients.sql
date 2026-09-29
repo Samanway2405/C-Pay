@@ -5,13 +5,11 @@
 -- "transactions_insert_participant" let any authenticated user INSERT a row as
 -- long as their own wallet appeared as sender or recipient, so a user could
 -- claim they received any amount, from anyone, with status 'success' and an
--- arbitrary tx_hash. refresh_merchant_totals() sums this same table, so
--- merchant revenue was a number the merchant's own customers could write.
+-- arbitrary tx_hash.
 --
 -- This migration is idempotent and additive: it re-asserts the lockdown from
 -- 20260829000001 for environments that were provisioned from the older
--- App/supabase_schema.sql, and restores merchant-scoped SELECT access that the
--- earlier lockdown dropped. Existing rows are never touched.
+-- App/supabase_schema.sql. Existing rows are never touched.
 
 BEGIN;
 
@@ -26,9 +24,7 @@ DROP POLICY IF EXISTS "transactions_delete" ON transactions;
 DROP POLICY IF EXISTS "transactions_delete_participant" ON transactions;
 DROP POLICY IF EXISTS "transactions_all_participant" ON transactions;
 
--- 2. Read-only, participant-scoped access for clients. Merchants may also read
---    the rows attributed to a merchant account they own, which the dashboard
---    needs and which 20260829000001 inadvertently removed.
+-- 2. Read-only, participant-scoped access for clients.
 DROP POLICY IF EXISTS "transactions_select" ON transactions;
 DROP POLICY IF EXISTS "transactions_select_participant" ON transactions;
 CREATE POLICY "transactions_select_participant" ON transactions
@@ -37,9 +33,6 @@ USING (
   auth.uid() IS NOT NULL AND (
     from_address = current_wallet_address()
     OR to_address = current_wallet_address()
-    OR merchant_id IN (
-      SELECT id FROM merchants WHERE auth_user_id = auth.uid()
-    )
   )
 );
 
