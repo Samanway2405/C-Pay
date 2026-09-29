@@ -34,6 +34,11 @@ With authentication enabled, startup also probes `wallet_bindings` and exits bef
 listening if the table is missing or unreachable. Supabase-free development is
 available only with `RELAYER_AUTH_REQUIRED=false`.
 
+Add Money always requires Supabase persistence, including in auth-disabled testnet
+development. The relayer acquires a database lock and persists the cooldown claim
+before submitting the Stellar payment; database lookup or write failures return a
+retryable `503` and do not submit funds.
+
 ## Endpoints
 
 - `GET /health`
