@@ -4,8 +4,8 @@
  * These tests verify that when auth is enabled the relayer:
  *   - Allows requests whose wallet belongs to the authenticated user.
  *   - Returns 403 WALLET_OWNERSHIP_DENIED when the wallet belongs to another user.
- *   - Returns 403 MERCHANT_OWNERSHIP_DENIED when the merchant wallet belongs to another user.
- *   - Skips ownership checks when Supabase persistence is not configured (no service-role key).
+ *   - Returns 503 when an ownership lookup or binding write fails.
+ *   - Refuses to boot when wallet_bindings is unavailable.
  *   - Skips ownership checks when auth is disabled (RELAYER_AUTH_REQUIRED=false).
  *
  * External network calls (Stellar Horizon, Supabase) are fully mocked so no real
@@ -59,10 +59,14 @@ const USER_B = 'user-b-uid';
  *
  * Route table (called in order):
  *   /auth/v1/user      → verifySupabaseTokenWithAuthApi (sub from token header)
- *   /rest/v1/users?... → resolveUserWallets
+ *   /rest/v1/wallet_bindings?... → startup probe and ownership resolution
  */
 function buildFetchMock({
-  userWallets = {},         // { [authUid]: string[] }
+  userWallets = {},
+  walletOwners = {},
+  failOwnershipLookup = false,
+  failBindingWrite = false,
+  walletBindingsUnavailable = false,
 } = {}) {
   return async function mockFetch(url, options) {
     const urlStr = String(url);
@@ -86,7 +90,35 @@ function buildFetchMock({
     // ── wallet_bindings table ─────────────────────────────────────────────────
     if (urlStr.includes('/rest/v1/wallet_bindings')) {
       const parsed = new URL(urlStr);
+      const method = (options && options.method) || 'GET';
       const authUserIdFilter = parsed.searchParams.get('auth_user_id') || '';
+      const walletAddressFilter = parsed.searchParams.get('wallet_address') || '';
+      const isStartupProbe = parsed.searchParams.get('select') === 'id'
+        && parsed.searchParams.get('limit') === '1'
+        && !authUserIdFilter
+        && !walletAddressFilter;
+
+      if (walletBindingsUnavailable) {
+        return makeResponse(false, 404, { code: '42P01', message: 'relation "wallet_bindings" does not exist' });
+      }
+      if (isStartupProbe) {
+        return makeResponse(true, 200, []);
+      }
+      if (method === 'POST') {
+        if (failBindingWrite) {
+          return makeResponse(false, 503, { code: 'PGRST000', message: 'database unavailable' });
+        }
+        return makeResponse(true, 201, null);
+      }
+      if (failOwnershipLookup) {
+        return makeResponse(false, 503, { code: 'PGRST000', message: 'database unavailable' });
+      }
+      if (walletAddressFilter) {
+        const wallet = walletAddressFilter.replace(/^eq\./, '');
+        const owner = walletOwners[wallet];
+        return makeResponse(true, 200, owner ? [{ auth_user_id: owner }] : []);
+      }
+
       const uid = authUserIdFilter.replace(/^eq\./, '');
       const wallets = (userWallets[uid] || []).map(w => ({ wallet_address: w }));
       return makeResponse(true, 200, wallets);
@@ -138,16 +170,19 @@ async function loadServer(env = {}) {
     SUPABASE_SERVICE_ROLE_KEY: 'test-service-role-key',
     RELAYER_AUTH_REQUIRED: 'true',
     ENABLE_TESTNET_FAUCET: 'true',
+    LEDGER_INGEST_ENABLED: 'false',
     PORT: '0',
   };
 
-  Object.assign(process.env, defaultEnv, env);
+  const { __fetchMock, ...envOverrides } = env;
+  Object.assign(process.env, defaultEnv, envOverrides);
 
   // Mount our fetch mock onto the global so the module picks it up.
-  const fetchImpl = env.__fetchMock || buildFetchMock();
+  const fetchImpl = __fetchMock || buildFetchMock();
   global.fetch = fetchImpl;
 
   const mod = require('./server.js');
+  await mod.startupPromise;
   app = mod.app;
   activeModuleServer = mod.server;
 
@@ -193,6 +228,38 @@ function postJson(appInstance, path, body, headers = {}) {
   });
 }
 
+function getJson(appInstance, path, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const testServer = http.createServer(appInstance);
+    testServer.listen(0, '127.0.0.1', () => {
+      const port = testServer.address().port;
+      const req = http.request({
+        method: 'GET',
+        path,
+        host: '127.0.0.1',
+        port,
+        headers,
+      }, (res) => {
+        let data = '';
+        res.on('data', chunk => (data += chunk));
+        res.on('end', () => {
+          testServer.close();
+          try {
+            resolve({ status: res.statusCode, body: JSON.parse(data) });
+          } catch (_) {
+            resolve({ status: res.statusCode, body: data });
+          }
+        });
+      });
+      req.on('error', (error) => {
+        testServer.close();
+        reject(error);
+      });
+      req.end();
+    });
+  });
+}
+
 // ─── test suites ─────────────────────────────────────────────────────────────
 
 afterEach(async () => {
@@ -212,9 +279,9 @@ afterEach(async () => {
     'STELLAR_NETWORK', 'ALLOW_HTTP_HORIZON', 'ALLOW_CUSTOM_HORIZON',
     'STELLAR_HORIZON_URL', 'ALLOW_HTTP_SOROBAN_RPC', 'ALLOW_CUSTOM_SOROBAN_RPC',
     'SOROBAN_RPC_URL', 'STELLAR_NETWORK_PASSPHRASE', 'SPONSOR_SECRET',
-    'DISTRIBUTION_SECRET', 'CPINR_ASSET_ISSUER', 'SUPABASE_URL',
-    'SUPABASE_SERVICE_ROLE_KEY', 'RELAYER_AUTH_REQUIRED', 'ENABLE_TESTNET_FAUCET',
-    'PORT',
+    'DISTRIBUTION_SECRET', 'CPINR_ASSET_ISSUER', 'USDC_ASSET_ISSUER',
+    'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_JWT_SECRET',
+    'RELAYER_AUTH_REQUIRED', 'ENABLE_TESTNET_FAUCET', 'LEDGER_INGEST_ENABLED', 'PORT',
   ];
   ADDED_KEYS.forEach(k => delete process.env[k]);
   jest.resetModules();
@@ -229,6 +296,10 @@ describe('/accounts/prepare ownership', () => {
     expressApp = await loadServer({
       __fetchMock: buildFetchMock({
         userWallets: { [USER_A]: [WALLET_A] },
+        walletOwners: {
+          [WALLET_A]: USER_A,
+          [WALLET_B]: USER_B,
+        },
       }),
     });
   });
@@ -257,6 +328,28 @@ describe('/accounts/prepare ownership', () => {
 
     expect(status).toBe(403);
     expect(body.code).toBe('WALLET_OWNERSHIP_DENIED');
+  });
+
+  it('aborts account sponsorship when a new wallet binding cannot be persisted', async () => {
+    expressApp = await loadServer({
+      __fetchMock: buildFetchMock({
+        userWallets: { [USER_A]: [WALLET_A] },
+        failBindingWrite: true,
+      }),
+    });
+
+    const { status, body } = await postJson(
+      expressApp,
+      '/accounts/prepare',
+      { accountId: WALLET_B },
+      { Authorization: makeBearerToken(USER_A) }
+    );
+
+    expect(status).toBe(503);
+    expect(body).toEqual(expect.objectContaining({
+      code: 'WALLET_BINDING_FAILED',
+      retryable: true,
+    }));
   });
 });
 
@@ -340,32 +433,59 @@ describe('ownership checks skipped when auth is disabled', () => {
   });
 });
 
-// ── persistence not configured ───────────────────────────────────────────────
+// ── fail-closed ownership infrastructure ─────────────────────────────────────
 
-describe('ownership checks skipped when Supabase persistence is not configured', () => {
-  let expressApp;
+describe('ownership infrastructure failures', () => {
+  it('rejects a request when the wallet binding lookup fails', async () => {
+    const expressApp = await loadServer({
+      __fetchMock: buildFetchMock({ failOwnershipLookup: true }),
+    });
 
-  beforeEach(async () => {
-    // Auth required but no service-role key → persistence off, ownership skipped.
-    expressApp = await loadServer({
+    const { status, body } = await postJson(
+      expressApp,
+      '/add-money',
+      { accountId: WALLET_A },
+      { Authorization: makeBearerToken(USER_A) }
+    );
+
+    expect(status).toBe(503);
+    expect(body).toEqual(expect.objectContaining({
+      code: 'WALLET_OWNERSHIP_UNAVAILABLE',
+      retryable: true,
+    }));
+  });
+
+  it('rejects a path-wallet request when the binding lookup fails', async () => {
+    const expressApp = await loadServer({
+      __fetchMock: buildFetchMock({ failOwnershipLookup: true }),
+    });
+
+    const { status, body } = await getJson(
+      expressApp,
+      `/account/${WALLET_A}/balance`,
+      { Authorization: makeBearerToken(USER_A) }
+    );
+
+    expect(status).toBe(503);
+    expect(body.code).toBe('WALLET_OWNERSHIP_UNAVAILABLE');
+  });
+
+  it('refuses to boot when wallet_bindings is unreachable', async () => {
+    await expect(loadServer({
+      __fetchMock: buildFetchMock({ walletBindingsUnavailable: true }),
+    })).rejects.toThrow(/wallet_bindings/);
+    expect(activeModuleServer).toBeNull();
+  });
+
+  it('refuses to boot without persistence when authentication is enabled', async () => {
+    await expect(loadServer({
       RELAYER_AUTH_REQUIRED: 'true',
       SUPABASE_URL: '',
       SUPABASE_SERVICE_ROLE_KEY: '',
       SUPABASE_JWT_SECRET: 'test-jwt-secret-that-is-long-enough',
       __fetchMock: buildFetchMock({}),
-    });
-  });
-
-  it('does not return 403 for /add-money when persistence is not configured', async () => {
-    const { status, body } = await postJson(
-      expressApp,
-      '/add-money',
-      { accountId: WALLET_B },
-      { Authorization: makeBearerToken(USER_A) }
-    );
-
-    expect(status).not.toBe(403);
-    expect(body.code).not.toBe('WALLET_OWNERSHIP_DENIED');
+    })).rejects.toThrow(/SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY/);
+    expect(activeModuleServer).toBeNull();
   });
 });
 
