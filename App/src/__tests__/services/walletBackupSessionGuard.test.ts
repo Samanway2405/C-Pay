@@ -74,6 +74,8 @@ describe('wallet backup session-swap guard (issue #32)', () => {
     // session on the business email. They must not come back.
     expect((authModule as Record<string, unknown>).sendEmailOTP).toBeUndefined();
     expect((authModule as Record<string, unknown>).verifyEmailOTP).toBeUndefined();
+    expect((authModule as Record<string, unknown>).sendMerchantContactOtp).toBeUndefined();
+    expect((authModule as Record<string, unknown>).verifyMerchantContactOtp).toBeUndefined();
   });
 
   test('blocks a second-email OTP when a backup is bound to the current session', async () => {
