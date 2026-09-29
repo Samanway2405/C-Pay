@@ -23,6 +23,7 @@ const SUPPORT_CODES = new Set([
   'RELAYER_URL_MISSING',
   'CONTRACT_INTENT_SOURCE_MISMATCH',
   'CONTRACT_INTENT_AMOUNT_MISMATCH',
+  'PAYMENT_AMOUNT_EXCEEDED',
 ]);
 
 const classifyCategory = (errorCode: string | undefined, lowerMessage: string): PaymentFailureCategory => {
@@ -192,6 +193,46 @@ const buildFailureCopy = (error: any): Omit<PaymentFailureCopy, 'category'> => {
     return {
       errorMessage: 'Payment Amount Changed',
       errorReason: `The QR payment request was created for a different amount than the payment being sent. ${safeNoDeductionText} Ask the merchant to generate a fresh QR code, then try again.`,
+      errorCode,
+    };
+  }
+
+  if (errorCode === 'PAYMENT_AMOUNT_EXCEEDED') {
+    return {
+      errorMessage: 'Amount Exceeds Limit',
+      errorReason: 'This payment exceeds the maximum allowed amount per transaction. Please enter a lower amount.',
+      errorCode,
+    };
+  }
+
+  if (errorCode === 'PAYMENT_DAILY_CAP_EXCEEDED') {
+    return {
+      errorMessage: 'Daily Payment Limit Reached',
+      errorReason: 'You have reached your daily payment limit. Please try again tomorrow.',
+      errorCode,
+    };
+  }
+
+  if (errorCode === 'PAYMENT_DAILY_COUNT_EXCEEDED') {
+    return {
+      errorMessage: 'Daily Transaction Limit Reached',
+      errorReason: 'You have reached the maximum number of transactions allowed today. Please try again tomorrow.',
+      errorCode,
+    };
+  }
+
+  if (errorCode === 'PAYMENT_VELOCITY_EXCEEDED') {
+    return {
+      errorMessage: 'Too Many Transactions',
+      errorReason: 'You are submitting payments too quickly. Please wait a moment before trying again.',
+      errorCode,
+    };
+  }
+
+  if (errorCode === 'PAYMENT_LIMITS_UNAVAILABLE') {
+    return {
+      errorMessage: 'Limits Service Unavailable',
+      errorReason: `Payment limits service is temporarily unavailable. ${safeNoDeductionText} Please try again in a few moments.`,
       errorCode,
     };
   }

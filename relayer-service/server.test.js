@@ -71,10 +71,12 @@ function buildFetchMock({
   failDailyCapLookup = false,
   failClaimWrite = false,
   failLockWrite = false,
+  failPaymentRecordsLookup = false,
+  failPaymentRecordsWrite = false,
   database,
   events = [],
 } = {}) {
-  const persistence = database || { locks: new Map(), claims: [] };
+  const persistence = database || { locks: new Map(), claims: [], paymentRecords: [] };
   return async function mockFetch(url, options) {
     const urlStr = String(url);
 
@@ -216,6 +218,40 @@ function buildFetchMock({
           events.push('claim:settle');
         }
         return makeResponse(true, 200, row ? [row] : []);
+      }
+    }
+
+    // ── Payment records ────────────────────────────────────────────────────────
+    if (urlStr.includes('/rest/v1/payment_records')) {
+      const parsed = new URL(urlStr);
+      const method = (options && options.method) || 'GET';
+
+      if (failPaymentRecordsLookup) {
+        return makeResponse(false, 503, { code: 'PGRST000', message: 'database unavailable' });
+      }
+
+      if (method === 'GET') {
+        const records = (persistence.paymentRecords || []).map(r => ({
+          amount: r.amount,
+          created_at: r.created_at,
+          wallet_address: r.wallet_address,
+          auth_user_id: r.auth_user_id,
+        }));
+        return makeResponse(true, 200, records);
+      }
+
+      if (method === 'POST') {
+        if (failPaymentRecordsWrite) {
+          return makeResponse(false, 503, { code: 'PGRST000', message: 'database unavailable' });
+        }
+        const row = JSON.parse(options.body);
+        if (!persistence.paymentRecords) persistence.paymentRecords = [];
+        persistence.paymentRecords.push(row);
+        return makeResponse(true, 201, [row]);
+      }
+
+      if (method === 'DELETE') {
+        return makeResponse(true, 204, null);
       }
     }
 
@@ -777,3 +813,185 @@ describe('unauthenticated requests are rejected before ownership check', () => {
     expect(body.code).toBe('AUTH_REQUIRED');
   });
 });
+
+// ── Payment transaction limits and velocity enforcement (#114) ───────────────
+
+describe('Payment transaction limits and velocity enforcement (#114)', () => {
+  let mod;
+  let expressApp;
+  let testHooks;
+  let persistence;
+
+  beforeEach(async () => {
+    persistence = { locks: new Map(), claims: [], paymentRecords: [] };
+    mod = await loadServerModule({
+      MAX_PAYMENT_AMOUNT: '1000',
+      MAX_PAYMENT_DAILY_AMOUNT: '5000',
+      MAX_PAYMENT_DAILY_COUNT: '20',
+      MAX_PAYMENT_VELOCITY_PER_MINUTE: '10',
+      __fetchMock: buildFetchMock({
+        userWallets: { [USER_A]: [WALLET_A] },
+        walletOwners: { [WALLET_A]: USER_A },
+        database: persistence,
+      }),
+    });
+    expressApp = mod.app;
+    testHooks = mod.testHooks;
+  });
+
+  afterAll(async () => {
+    await closeActiveModuleServers();
+  });
+
+  it('GET /payments/limits returns server-authoritative numbers and remaining quota', async () => {
+    persistence.paymentRecords = [
+      {
+        id: 'rec-1',
+        auth_user_id: USER_A,
+        wallet_address: WALLET_A,
+        amount: '200',
+        created_at: new Date().toISOString(),
+      },
+      {
+        id: 'rec-2',
+        auth_user_id: USER_A,
+        wallet_address: WALLET_A,
+        amount: '300',
+        created_at: new Date().toISOString(),
+      },
+    ];
+
+    const { status, body } = await getJson(
+      expressApp,
+      '/payments/limits',
+      { Authorization: makeBearerToken(USER_A) }
+    );
+
+    expect(status).toBe(200);
+    expect(body.maxAmountPerTransaction).toBe(1000);
+    expect(body.maxDailyAmount).toBe(5000);
+    expect(body.maxTransactionsPerDay).toBe(20);
+    expect(body.maxRequestsPerMinute).toBe(10);
+    expect(body.transactionsToday).toBe(2);
+    expect(body.amountToday).toBe(500);
+    expect(body.remaining).toEqual({
+      amount: 4500,
+      transactions: 18,
+    });
+  });
+
+  it('rejects payments exceeding the per-transaction cap (e.g. 1500 > 1000)', async () => {
+    await expect(
+      testHooks.checkPaymentLimits(WALLET_A, USER_A, '1500')
+    ).rejects.toMatchObject({
+      statusCode: 400,
+      code: 'PAYMENT_AMOUNT_EXCEEDED',
+    });
+  });
+
+  it('rejects payment when cumulative daily amount exceeds daily cap (5000)', async () => {
+    persistence.paymentRecords = [
+      {
+        id: 'rec-1',
+        auth_user_id: USER_A,
+        wallet_address: WALLET_A,
+        amount: '4800',
+        created_at: new Date().toISOString(),
+      },
+    ];
+
+    await expect(
+      testHooks.checkPaymentLimits(WALLET_A, USER_A, '300')
+    ).rejects.toMatchObject({
+      statusCode: 429,
+      code: 'PAYMENT_DAILY_CAP_EXCEEDED',
+      retryAfterSeconds: expect.any(Number),
+    });
+  });
+
+  it('rejects payment when daily transaction count reaches limit (20)', async () => {
+    persistence.paymentRecords = Array.from({ length: 20 }, (_, i) => ({
+      id: `rec-${i}`,
+      auth_user_id: USER_A,
+      wallet_address: WALLET_A,
+      amount: '10',
+      created_at: new Date(Date.now() - (20 - i) * 60 * 1000).toISOString(),
+    }));
+
+    await expect(
+      testHooks.checkPaymentLimits(WALLET_A, USER_A, '10')
+    ).rejects.toMatchObject({
+      statusCode: 429,
+      code: 'PAYMENT_DAILY_COUNT_EXCEEDED',
+      retryAfterSeconds: expect.any(Number),
+    });
+  });
+
+  it('rejects payment when velocity limit is exceeded (> 10 per minute)', async () => {
+    const now = Date.now();
+    persistence.paymentRecords = Array.from({ length: 10 }, (_, i) => ({
+      id: `velocity-${i}`,
+      auth_user_id: USER_A,
+      wallet_address: WALLET_A,
+      amount: '5',
+      created_at: new Date(now - (10 - i) * 1000).toISOString(),
+    }));
+
+    await expect(
+      testHooks.checkPaymentLimits(WALLET_A, USER_A, '5')
+    ).rejects.toMatchObject({
+      statusCode: 429,
+      code: 'PAYMENT_VELOCITY_EXCEEDED',
+      retryAfterSeconds: expect.any(Number),
+    });
+  });
+
+  it('fails closed when payment limits lookup errors out (503)', async () => {
+    const failMod = await loadServerModule({
+      __fetchMock: buildFetchMock({
+        userWallets: { [USER_A]: [WALLET_A] },
+        walletOwners: { [WALLET_A]: USER_A },
+        failPaymentRecordsLookup: true,
+      }),
+    });
+
+    await expect(
+      failMod.testHooks.checkPaymentLimits(WALLET_A, USER_A, '50')
+    ).rejects.toMatchObject({
+      statusCode: 503,
+      code: 'PAYMENT_LIMITS_UNAVAILABLE',
+      retryable: true,
+    });
+
+    const { status, body } = await getJson(
+      failMod.app,
+      '/payments/limits',
+      { Authorization: makeBearerToken(USER_A) }
+    );
+
+    expect(status).toBe(503);
+    expect(body.code).toBe('PAYMENT_LIMITS_UNAVAILABLE');
+  });
+
+  it('enforces limits even when client-side checks are completely bypassed (patched client)', async () => {
+    // Fill up daily allowance to 4900
+    persistence.paymentRecords = [
+      {
+        id: 'rec-bypass',
+        auth_user_id: USER_A,
+        wallet_address: WALLET_A,
+        amount: '4900',
+        created_at: new Date().toISOString(),
+      },
+    ];
+
+    // Client check bypassed: attempts to check limit for 200
+    await expect(
+      testHooks.checkPaymentLimits(WALLET_A, USER_A, '200')
+    ).rejects.toMatchObject({
+      statusCode: 429,
+      code: 'PAYMENT_DAILY_CAP_EXCEEDED',
+    });
+  });
+});
+

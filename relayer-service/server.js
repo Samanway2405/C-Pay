@@ -307,7 +307,28 @@ app.post('/payments/submit', requireAuthenticatedUser, requireWalletOwnership(),
     });
   }
 
-  validatePaymentTransaction(innerTransaction);
+  const paymentDetails = validatePaymentTransaction(innerTransaction);
+
+  const authUid = req.auth && req.auth.sub;
+  const walletAddress = innerTransaction.source;
+
+  try {
+    await checkPaymentLimits(walletAddress, authUid, paymentDetails.amount);
+  } catch (limitErr) {
+    if (limitErr.statusCode) {
+      return res.status(limitErr.statusCode).json({
+        error: limitErr.message,
+        code: limitErr.code,
+        ...(limitErr.retryAfterSeconds ? { retryAfterSeconds: limitErr.retryAfterSeconds } : {}),
+        ...(limitErr.details || {}),
+      });
+    }
+    return res.status(503).json({
+      error: 'Payment limits service is temporarily unavailable',
+      code: 'PAYMENT_LIMITS_UNAVAILABLE',
+      retryable: true,
+    });
+  }
 
   const maxFee = (BigInt(config.baseFee) * BigInt(config.feeBumpMultiplier)).toString();
   const feeBump = StellarSdk.TransactionBuilder.buildFeeBumpTransaction(
@@ -320,6 +341,15 @@ app.post('/payments/submit', requireAuthenticatedUser, requireWalletOwnership(),
 
   const result = await server.submitTransaction(feeBump);
 
+  await recordPaymentRecord({
+    walletAddress,
+    authUserId: authUid,
+    amount: paymentDetails.amount,
+    txHash: result.hash,
+  }).catch(err => {
+    console.error('Failed to record payment limits entry:', err.message);
+  });
+
   const response = {
     hash: result.hash,
     ledger: result.ledger,
@@ -331,6 +361,21 @@ app.post('/payments/submit', requireAuthenticatedUser, requireWalletOwnership(),
   }
 
   res.json(response);
+});
+
+app.get(['/payments/limits', '/limits'], requireAuthenticatedUser, async (req, res) => {
+  try {
+    const authUid = req.auth && req.auth.sub;
+    const walletAddress = req.query.accountId || (req.resolvedWallets && req.resolvedWallets[0]);
+    const limits = await getPaymentLimitsStatus(authUid, walletAddress);
+    res.json(limits);
+  } catch (error) {
+    console.error('Failed to get payment limits:', error.message);
+    res.status(503).json({
+      error: 'Payment limits service is temporarily unavailable',
+      code: 'PAYMENT_LIMITS_UNAVAILABLE',
+    });
+  }
 });
 
 app.post('/add-money', requireAuthenticatedUser, requireWalletOwnership('accountId'), async (req, res) => {
@@ -574,6 +619,10 @@ module.exports = {
       reserveAddMoneyClaim,
       settleAddMoneyClaim,
       supabaseRestRequest,
+      checkPaymentLimits,
+      getPaymentLimitsStatus,
+      recordPaymentRecord,
+      inMemoryPaymentRecords,
     }),
   } : {}),
 };
@@ -622,7 +671,10 @@ function loadConfig() {
     addMoneyAmount: process.env.ADD_MONEY_AMOUNT || '100',
     maxAddMoneyAmount: Number(process.env.MAX_ADD_MONEY_AMOUNT || 1000),
     maxAddMoneyDailyCap: Number(process.env.MAX_ADD_MONEY_DAILY_CAP || process.env.ADD_MONEY_DAILY_CAP || 1000),
-    maxPaymentAmount: Number(process.env.MAX_PAYMENT_AMOUNT || 100000),
+    maxPaymentAmount: Number(process.env.MAX_PAYMENT_AMOUNT || 1000),
+    maxPaymentDailyAmount: Number(process.env.MAX_PAYMENT_DAILY_AMOUNT || 5000),
+    maxPaymentDailyCount: Number(process.env.MAX_PAYMENT_DAILY_COUNT || 20),
+    maxPaymentVelocityPerMinute: Number(process.env.MAX_PAYMENT_VELOCITY_PER_MINUTE || 10),
     addMoneyCooldownMs: Number(process.env.ADD_MONEY_COOLDOWN_MS || 24 * 60 * 60 * 1000),
     idempotencyTtlMs: Number(process.env.IDEMPOTENCY_TTL_MS || 10 * 60 * 1000),
     lowXlmThreshold: Number(process.env.LOW_XLM_THRESHOLD || 5),
@@ -1101,6 +1153,9 @@ function normalizeAmount(value, maxAmount) {
   if (!Number.isFinite(numeric) || numeric <= 0 || numeric > maxAmount) {
     const error = new Error(`Amount must be greater than 0 and no more than ${maxAmount}`);
     error.statusCode = 400;
+    if (numeric > maxAmount) {
+      error.code = 'PAYMENT_AMOUNT_EXCEEDED';
+    }
     throw error;
   }
 
@@ -1425,6 +1480,164 @@ async function setIdempotencyResponse(key, response, ttlMs) {
   }
 }
 
+const inMemoryPaymentRecords = [];
+
+async function getPaymentRecords(accountId, authUserId, sinceIso) {
+  if (!isSupabasePersistenceEnabled()) {
+    return inMemoryPaymentRecords.filter(r => {
+      const matchUser = (authUserId && r.auth_user_id === authUserId) || (accountId && r.wallet_address === accountId);
+      const matchTime = !sinceIso || new Date(r.created_at) >= new Date(sinceIso);
+      return matchUser && matchTime;
+    });
+  }
+
+  let filter;
+  if (authUserId) {
+    filter = accountId
+      ? `or=(auth_user_id.eq.${encodeURIComponent(authUserId)},wallet_address.eq.${encodeURIComponent(accountId)})`
+      : `auth_user_id=eq.${encodeURIComponent(authUserId)}`;
+  } else {
+    filter = `wallet_address=eq.${encodeURIComponent(accountId)}`;
+  }
+
+  const query = new URLSearchParams({
+    select: 'amount,created_at',
+    order: 'created_at.asc',
+  });
+  if (sinceIso) {
+    query.set('created_at', `gte.${sinceIso}`);
+  }
+
+  const rows = await supabaseRestRequest(`payment_records?${filter}&${query.toString()}`, {
+    method: 'GET',
+    headers: { Accept: 'application/json' },
+  });
+
+  if (!Array.isArray(rows)) {
+    throw new Error('Payment limits lookup returned an invalid response');
+  }
+
+  return rows;
+}
+
+async function recordPaymentRecord({ id, authUserId, walletAddress, amount, txHash }) {
+  const row = {
+    id: id || crypto.randomUUID(),
+    auth_user_id: authUserId || null,
+    wallet_address: walletAddress,
+    amount,
+    tx_hash: txHash || null,
+    created_at: new Date().toISOString(),
+  };
+
+  inMemoryPaymentRecords.push(row);
+
+  if (!isSupabasePersistenceEnabled()) {
+    return row;
+  }
+
+  try {
+    const rows = await supabaseRestRequest('payment_records', {
+      method: 'POST',
+      headers: { Prefer: 'return=representation' },
+      body: JSON.stringify(row),
+    });
+    return (Array.isArray(rows) && rows[0]) || row;
+  } catch (error) {
+    console.error('Failed to persist payment limits record:', error.message);
+    throw error;
+  }
+}
+
+async function checkPaymentLimits(walletAddress, authUserId, amountStr) {
+  const amountNum = Number(amountStr);
+
+  if (amountNum > config.maxPaymentAmount) {
+    const error = new Error(`Payment amount exceeds the maximum per-transaction limit of ${config.maxPaymentAmount} ${config.assetCode}`);
+    error.statusCode = 400;
+    error.code = 'PAYMENT_AMOUNT_EXCEEDED';
+    throw error;
+  }
+
+  const now = Date.now();
+  const oneDayAgo = new Date(now - 24 * 60 * 60 * 1000).toISOString();
+
+  let records;
+  try {
+    records = await getPaymentRecords(walletAddress, authUserId, oneDayAgo);
+  } catch (err) {
+    const error = new Error('Payment limits service is temporarily unavailable');
+    error.statusCode = 503;
+    error.code = 'PAYMENT_LIMITS_UNAVAILABLE';
+    error.retryable = true;
+    throw error;
+  }
+
+  // Velocity limit: payments within the last 60 seconds
+  const recentRecords = records.filter(r => new Date(r.created_at).getTime() >= (now - 60 * 1000));
+  if (recentRecords.length >= config.maxPaymentVelocityPerMinute) {
+    const oldestRecent = Math.min(...recentRecords.map(r => new Date(r.created_at).getTime()));
+    const retryAfterSeconds = Math.max(1, Math.ceil((oldestRecent + 60 * 1000 - now) / 1000));
+    const error = new Error(`Payment velocity limit reached (${config.maxPaymentVelocityPerMinute} per minute). Please wait ${retryAfterSeconds} seconds.`);
+    error.statusCode = 429;
+    error.code = 'PAYMENT_VELOCITY_EXCEEDED';
+    error.retryAfterSeconds = retryAfterSeconds;
+    throw error;
+  }
+
+  // Daily transaction count limit
+  if (records.length >= config.maxPaymentDailyCount) {
+    const oldestInDay = new Date(records[0].created_at).getTime();
+    const retryAfterSeconds = Math.max(1, Math.ceil((oldestInDay + 24 * 60 * 60 * 1000 - now) / 1000));
+    const error = new Error(`Daily payment transaction limit reached (${config.maxPaymentDailyCount} transactions per day). Please try again later.`);
+    error.statusCode = 429;
+    error.code = 'PAYMENT_DAILY_COUNT_EXCEEDED';
+    error.retryAfterSeconds = retryAfterSeconds;
+    throw error;
+  }
+
+  // Daily amount limit
+  const totalAmountToday = records.reduce((sum, r) => sum + Number(r.amount || 0), 0);
+  if (totalAmountToday + amountNum > config.maxPaymentDailyAmount) {
+    const oldestInDay = new Date(records[0].created_at).getTime();
+    const retryAfterSeconds = Math.max(1, Math.ceil((oldestInDay + 24 * 60 * 60 * 1000 - now) / 1000));
+    const error = new Error(`Daily payment amount limit reached. Maximum ${config.maxPaymentDailyAmount} ${config.assetCode} per day.`);
+    error.statusCode = 429;
+    error.code = 'PAYMENT_DAILY_CAP_EXCEEDED';
+    error.retryAfterSeconds = retryAfterSeconds;
+    error.details = {
+      dailyCap: config.maxPaymentDailyAmount,
+      totalToday: totalAmountToday,
+      requested: amountNum,
+    };
+    throw error;
+  }
+
+  return { allowed: true };
+}
+
+async function getPaymentLimitsStatus(authUserId, walletAddress) {
+  const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const records = await getPaymentRecords(walletAddress, authUserId, oneDayAgo);
+
+  const transactionsToday = records.length;
+  const amountToday = records.reduce((sum, r) => sum + Number(r.amount || 0), 0);
+
+  return {
+    maxAmountPerTransaction: config.maxPaymentAmount,
+    maxDailyAmount: config.maxPaymentDailyAmount,
+    maxTransactionsPerDay: config.maxPaymentDailyCount,
+    maxDailyCount: config.maxPaymentDailyCount,
+    maxRequestsPerMinute: config.maxPaymentVelocityPerMinute,
+    amountToday,
+    transactionsToday,
+    remaining: {
+      amount: Math.max(0, config.maxPaymentDailyAmount - amountToday),
+      transactions: Math.max(0, config.maxPaymentDailyCount - transactionsToday),
+    },
+  };
+}
+
 // ── Startup cleanup of expired persisted state ──────────────────────────────
 
 async function cleanExpiredPersistedState() {
@@ -1435,6 +1648,11 @@ async function cleanExpiredPersistedState() {
       method: 'DELETE',
       headers: { Prefer: 'return=minimal' },
     });
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    await supabaseRestRequest(`payment_records?created_at=lte.${encodeURIComponent(sevenDaysAgo)}`, {
+      method: 'DELETE',
+      headers: { Prefer: 'return=minimal' },
+    }).catch(() => {});
     console.log('Expired persisted state cleaned up on startup');
   } catch (error) {
     console.error('Failed to clean expired persisted state:', error.message);
