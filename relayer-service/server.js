@@ -341,6 +341,14 @@ app.post('/add-money', requireAuthenticatedUser, requireWalletOwnership('account
     });
   }
 
+  if (!isSupabasePersistenceEnabled()) {
+    return res.status(503).json({
+      error: 'Add Money persistence is temporarily unavailable',
+      code: 'ADD_MONEY_PERSISTENCE_UNAVAILABLE',
+      retryable: true,
+    });
+  }
+
   const accountId = assertAccountId(req.body.accountId, 'accountId');
   const amount = normalizeAmount(req.body.amount || config.addMoneyAmount, config.maxAddMoneyAmount);
   const idempotencyKey = normalizeOptionalString(req.body.idempotencyKey);
@@ -372,14 +380,6 @@ app.post('/add-money', requireAuthenticatedUser, requireWalletOwnership('account
   }
 
   try {
-    const status = await getAccountStatus(accountId);
-    if (!status.exists || !status.hasTrustline) {
-      return res.status(409).json({
-        error: 'Account is not ready to receive Add Money balance',
-        code: 'ACCOUNT_NOT_READY',
-      });
-    }
-
     const retryAfterSeconds = await getAddMoneyRetryAfterSeconds(accountId, authUserId);
     if (retryAfterSeconds > 0) {
       return res.status(429).json({
@@ -400,6 +400,14 @@ app.post('/add-money', requireAuthenticatedUser, requireWalletOwnership('account
       });
     }
 
+    const status = await getAccountStatus(accountId);
+    if (!status.exists || !status.hasTrustline) {
+      return res.status(409).json({
+        error: 'Account is not ready to receive Add Money balance',
+        code: 'ACCOUNT_NOT_READY',
+      });
+    }
+
     const distributionBalances = await getBalances(distributionKeypair.publicKey());
     if (Number(distributionBalances.asset || '0') < Number(amount)) {
       return res.status(503).json({
@@ -409,6 +417,17 @@ app.post('/add-money', requireAuthenticatedUser, requireWalletOwnership('account
         requiredAmount: amount,
       });
     }
+
+    const claimId = crypto.randomUUID();
+    const nextAvailableAt = new Date(Date.now() + config.addMoneyCooldownMs).toISOString();
+    await reserveAddMoneyClaim({
+      claimId,
+      walletAddress: accountId,
+      authUserId,
+      amount,
+      idempotencyKey,
+      nextAvailableAt,
+    });
 
     const distributionAccount = await server.loadAccount(distributionKeypair.publicKey());
     const tx = new StellarSdk.TransactionBuilder(distributionAccount, {
@@ -435,15 +454,7 @@ app.post('/add-money', requireAuthenticatedUser, requireWalletOwnership('account
       assetCode: config.assetCode,
     };
 
-    const nextAvailableAt = new Date(Date.now() + config.addMoneyCooldownMs).toISOString();
-    await recordAddMoneyClaim({
-      walletAddress: accountId,
-      authUserId,
-      amount,
-      txHash: result.hash,
-      idempotencyKey,
-      nextAvailableAt,
-    });
+    await settleAddMoneyClaim(claimId, result.hash);
 
     if (idempotencyKey) {
       await setIdempotencyResponse(idempotencyKey, response, config.idempotencyTtlMs);
@@ -499,6 +510,7 @@ app.use((error, _req, res, _next) => {
     error: stellarMessage || message,
     code,
     resultCodes,
+    retryable: error.retryable || undefined,
   });
 });
 
@@ -552,6 +564,18 @@ module.exports = {
   },
   startupPromise,
   ingestWorker,
+  ...(process.env.NODE_ENV === 'test' ? {
+    testHooks: Object.freeze({
+      acquireAddMoneyUserLock,
+      releaseAddMoneyUserLock,
+      acquireIdempotencyLock,
+      getAddMoneyRetryAfterSeconds,
+      checkAddMoneyDailyCap,
+      reserveAddMoneyClaim,
+      settleAddMoneyClaim,
+      supabaseRestRequest,
+    }),
+  } : {}),
 };
 
 function loadConfig() {
@@ -1127,40 +1151,34 @@ async function getAccountStatus(accountId) {
   }
 }
 
-const activeAddMoneyUserLocks = new Map();
-
 async function acquireAddMoneyUserLock(userLockKey, ttlMs) {
-  const now = Date.now();
-  const existingExpiry = activeAddMoneyUserLocks.get(userLockKey);
-  if (existingExpiry && existingExpiry > now) {
-    return { acquired: false };
+  if (!isSupabasePersistenceEnabled()) {
+    throw createAddMoneyPersistenceError(
+      new Error('Supabase persistence is not configured'),
+      'lock acquisition'
+    );
   }
-  activeAddMoneyUserLocks.set(userLockKey, now + ttlMs);
 
-  if (isSupabasePersistenceEnabled()) {
-    try {
-      await supabaseRestRequest('relayer_idempotency_keys', {
-        method: 'POST',
-        headers: { Prefer: 'return=minimal' },
-        body: JSON.stringify({
-          key: userLockKey,
-          response: null,
-          expires_at: new Date(now + ttlMs).toISOString(),
-        }),
-      });
-    } catch (error) {
-      if (error?.message?.includes('409') || error?.status === 409 || error?.response?.status === 409) {
-        activeAddMoneyUserLocks.delete(userLockKey);
-        return { acquired: false };
-      }
+  try {
+    await supabaseRestRequest('relayer_idempotency_keys', {
+      method: 'POST',
+      headers: { Prefer: 'return=minimal' },
+      body: JSON.stringify({
+        key: userLockKey,
+        response: null,
+        expires_at: new Date(Date.now() + ttlMs).toISOString(),
+      }),
+    });
+    return { acquired: true };
+  } catch (error) {
+    if (isPostgresUniqueViolation(error)) {
+      return { acquired: false };
     }
+    throw createAddMoneyPersistenceError(error, 'lock acquisition');
   }
-
-  return { acquired: true };
 }
 
 async function releaseAddMoneyUserLock(userLockKey) {
-  activeAddMoneyUserLocks.delete(userLockKey);
   if (isSupabasePersistenceEnabled()) {
     try {
       const query = new URLSearchParams({ key: `eq.${userLockKey}` });
@@ -1181,7 +1199,10 @@ async function getAddMoneyRetryAfterSeconds(accountId, authUserId) {
 
 async function getPersistedAddMoneyRetryAfterSeconds(accountId, authUserId) {
   if (!isSupabasePersistenceEnabled()) {
-    return 0;
+    throw createAddMoneyPersistenceError(
+      new Error('Supabase persistence is not configured'),
+      'cooldown lookup'
+    );
   }
 
   try {
@@ -1203,7 +1224,10 @@ async function getPersistedAddMoneyRetryAfterSeconds(accountId, authUserId) {
       method: 'GET',
       headers: { Accept: 'application/json' },
     });
-    const nextAvailableAt = Array.isArray(rows) ? rows[0]?.next_available_at : null;
+    if (!Array.isArray(rows)) {
+      throw new Error('Cooldown lookup returned an invalid response');
+    }
+    const nextAvailableAt = rows[0]?.next_available_at;
     if (!nextAvailableAt) {
       return 0;
     }
@@ -1211,13 +1235,18 @@ async function getPersistedAddMoneyRetryAfterSeconds(accountId, authUserId) {
     const remainingMs = new Date(nextAvailableAt).getTime() - Date.now();
     return remainingMs > 0 ? Math.ceil(remainingMs / 1000) : 0;
   } catch (error) {
-    console.warn('Add Money claim cooldown lookup skipped:', error.message);
-    return 0;
+    throw createAddMoneyPersistenceError(error, 'cooldown lookup');
   }
 }
 
 async function checkAddMoneyDailyCap(accountId, authUserId, requestedAmount) {
-  if (!isSupabasePersistenceEnabled() || !config.maxAddMoneyDailyCap) {
+  if (!isSupabasePersistenceEnabled()) {
+    throw createAddMoneyPersistenceError(
+      new Error('Supabase persistence is not configured'),
+      'daily cap lookup'
+    );
+  }
+  if (!config.maxAddMoneyDailyCap) {
     return { allowed: true, totalClaimed: 0, retryAfterSeconds: 0 };
   }
 
@@ -1241,7 +1270,10 @@ async function checkAddMoneyDailyCap(accountId, authUserId, requestedAmount) {
       headers: { Accept: 'application/json' },
     });
 
-    if (!Array.isArray(rows) || rows.length === 0) {
+    if (!Array.isArray(rows)) {
+      throw new Error('Daily cap lookup returned an invalid response');
+    }
+    if (rows.length === 0) {
       return { allowed: true, totalClaimed: 0, retryAfterSeconds: 0 };
     }
 
@@ -1263,46 +1295,82 @@ async function checkAddMoneyDailyCap(accountId, authUserId, requestedAmount) {
 
     return { allowed: true, totalClaimed, retryAfterSeconds: 0 };
   } catch (error) {
-    console.warn('Add Money daily cap check skipped:', error.message);
-    return { allowed: true, totalClaimed: 0, retryAfterSeconds: 0 };
+    throw createAddMoneyPersistenceError(error, 'daily cap lookup');
   }
 }
 
-async function recordAddMoneyClaim({
+async function reserveAddMoneyClaim({
+  claimId,
   walletAddress,
   authUserId,
   amount,
-  txHash,
   idempotencyKey,
   nextAvailableAt,
 }) {
   if (!isSupabasePersistenceEnabled()) {
-    return;
+    throw createAddMoneyPersistenceError(
+      new Error('Supabase persistence is not configured'),
+      'claim reservation'
+    );
   }
 
   try {
-    const conflictColumn = idempotencyKey ? 'idempotency_key' : 'tx_hash';
     const row = {
+      id: claimId,
       wallet_address: walletAddress,
       auth_user_id: authUserId || null,
       amount,
       asset_code: config.assetCode,
       asset_issuer: config.assetIssuer,
-      tx_hash: txHash,
+      tx_hash: null,
       idempotency_key: idempotencyKey || null,
+      claimed_at: new Date().toISOString(),
       next_available_at: nextAvailableAt,
     };
 
-    await supabaseRestRequest(`add_money_claims?on_conflict=${conflictColumn}`, {
+    const rows = await supabaseRestRequest('add_money_claims', {
       method: 'POST',
-      headers: {
-        Prefer: 'resolution=merge-duplicates,return=minimal',
-      },
+      headers: { Prefer: 'return=representation' },
       body: JSON.stringify(row),
     });
+    if (!Array.isArray(rows) || rows.length !== 1 || rows[0]?.id !== claimId) {
+      throw new Error('Claim reservation returned an invalid response');
+    }
   } catch (error) {
-    console.warn('Add Money claim persistence skipped:', error.message);
+    throw createAddMoneyPersistenceError(error, 'claim reservation');
   }
+}
+
+async function settleAddMoneyClaim(claimId, txHash) {
+  try {
+    const query = new URLSearchParams({ id: `eq.${claimId}` });
+    const rows = await supabaseRestRequest(`add_money_claims?${query.toString()}`, {
+      method: 'PATCH',
+      headers: { Prefer: 'return=representation' },
+      body: JSON.stringify({ tx_hash: txHash }),
+    });
+    if (!Array.isArray(rows) || rows.length !== 1 || rows[0]?.id !== claimId) {
+      throw new Error('Claim settlement did not update the reserved claim');
+    }
+  } catch (error) {
+    throw createAddMoneyPersistenceError(error, 'claim settlement');
+  }
+}
+
+function createAddMoneyPersistenceError(cause, operation) {
+  if (cause?.code === 'ADD_MONEY_PERSISTENCE_UNAVAILABLE') {
+    return cause;
+  }
+  const error = new Error(`Add Money ${operation} is temporarily unavailable`);
+  error.statusCode = 503;
+  error.code = 'ADD_MONEY_PERSISTENCE_UNAVAILABLE';
+  error.retryable = true;
+  error.cause = cause;
+  return error;
+}
+
+function isPostgresUniqueViolation(error) {
+  return error?.code === '23505' || error?.body?.code === '23505';
 }
 
 function isSupabasePersistenceEnabled() {
@@ -1327,7 +1395,7 @@ async function acquireIdempotencyLock(key, ttlMs) {
     });
     return { acquired: true };
   } catch (error) {
-    if (error.response && error.response.status === 409) {
+    if (isPostgresUniqueViolation(error)) {
       const query = new URLSearchParams({ select: 'response', key: `eq.${key}`, limit: '1' });
       const rows = await supabaseRestRequest(`relayer_idempotency_keys?${query.toString()}`, {
         method: 'GET',
@@ -1403,12 +1471,31 @@ async function supabaseRestRequest(path, options = {}) {
     },
   });
   const text = await response.text();
-
-  if (!response.ok) {
-    throw new Error(text || `Supabase request failed with status ${response.status}`);
+  let body = null;
+  if (text) {
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = null;
+    }
   }
 
-  return text ? JSON.parse(text) : null;
+  if (!response.ok) {
+    const error = new Error(body?.message || text || `Supabase request failed with status ${response.status}`);
+    error.status = response.status;
+    error.body = body;
+    error.code = body?.code;
+    error.response = { status: response.status, data: body };
+    throw error;
+  }
+
+  if (!text) {
+    return null;
+  }
+  if (body === null) {
+    throw new Error('Supabase returned a non-JSON response');
+  }
+  return body;
 }
 
 function delay(ms) {

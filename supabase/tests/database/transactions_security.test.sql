@@ -1,6 +1,6 @@
 BEGIN;
 
-SELECT plan(12);
+SELECT plan(13);
 
 SELECT has_table(
   'public',
@@ -32,6 +32,13 @@ SELECT has_column(
   'add_money_claims',
   'auth_user_id',
   'add_money_claims is keyed by authenticated user'
+);
+
+SELECT col_is_null(
+  'public',
+  'relayer_idempotency_keys',
+  'response',
+  'persisted relayer locks can store an in-flight NULL response'
 );
 
 SELECT ok(
