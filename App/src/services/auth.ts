@@ -34,7 +34,7 @@ interface OTPRateLimit {
 }
 
 /**
- * Guard against silently destroying the user's only wallet recovery path.
+ * Guard against silently destroying the user's only wallet recovery path (issue #2).
  *
  * `supabase.auth.signInWithOtp` / `verifyOtp` mint a session for the address
  * being verified, which changes `auth.uid()`. `wallet_backups` is
@@ -314,107 +314,12 @@ export async function signOut(): Promise<void> {
   clearSessionPin();
 }
 
-// REMOVED (issue #32): sendEmailOTP / verifyEmailOTP.
+// Note on session swapping (issue #2 / #32):
 //
-// These were the merchant-registration second-email pair. They called
-// supabase.auth.signInWithOtp({ shouldCreateUser: true }) followed by
-// verifyOtp on the *business* email while the wallet owner was already
-// signed in. That replaced the session and changed auth.uid(), orphaning the
-// user's wallet_backups row (UNIQUE(auth_user_id), RLS scoped to auth.uid())
-// and silently destroying their only wallet recovery path.
+// Calling supabase.auth.signInWithOtp / verifyOtp while a session already exists
+// replaces the session and changes auth.uid(), orphaning the user's wallet_backups row
+// (UNIQUE(auth_user_id), RLS scoped to auth.uid()) and silently destroying their only
+// wallet recovery path.
 //
-// Do not reintroduce a second-email flow that mints a session. Verify a
-// business contact address with sendMerchantContactOtp /
-// verifyMerchantContactOtp below, which go through the relayer's Admin API
-// and never touch the wallet owner's session.
-
-/**
- * Send a merchant contact email OTP via the relayer's Admin API path.
- * This does NOT call supabase.auth.signInWithOtp — the wallet owner's
- * Supabase session is never modified.
- *
- * Requires a provisional merchantId (from the just-inserted merchants row)
- * and the business contact email to verify.
- */
-export async function sendMerchantContactOtp(
-  merchantId: string,
-  contactEmail: string
-): Promise<{ success: boolean; error?: string }> {
-  try {
-    const { data } = await supabase.auth.getSession();
-    const accessToken = data.session?.access_token;
-    if (!accessToken) {
-      return { success: false, error: 'No active session — please log in again' };
-    }
-
-    const relayerUrl = (process.env.EXPO_PUBLIC_STELLAR_RELAYER_URL || '').replace(/\/+$/, '');
-    if (!relayerUrl) {
-      return { success: false, error: 'Relayer URL not configured' };
-    }
-
-    const response = await fetch(`${relayerUrl}/merchants/send-contact-otp`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${accessToken}`,
-      },
-      body: JSON.stringify({ merchantId, contactEmail }),
-    });
-
-    const body = await response.json().catch(() => ({}));
-
-    if (!response.ok) {
-      return { success: false, error: body?.error || 'Failed to send verification code' };
-    }
-
-    return { success: true };
-  } catch (error: any) {
-    Logger.error('sendMerchantContactOtp error:', error);
-    return { success: false, error: error.message || 'Failed to send verification code' };
-  }
-}
-
-/**
- * Verify a merchant contact email OTP via the relayer.
- * On success the relayer marks contact_email_verified = true on the merchants
- * row and auto-approves the merchant in pilot mode.
- */
-export async function verifyMerchantContactOtp(
-  merchantId: string,
-  contactEmail: string,
-  token: string
-): Promise<{ success: boolean; verificationStatus?: string; error?: string }> {
-  try {
-    const { data } = await supabase.auth.getSession();
-    const accessToken = data.session?.access_token;
-    if (!accessToken) {
-      return { success: false, error: 'No active session — please log in again' };
-    }
-
-    const relayerUrl = (process.env.EXPO_PUBLIC_STELLAR_RELAYER_URL || '').replace(/\/+$/, '');
-    if (!relayerUrl) {
-      return { success: false, error: 'Relayer URL not configured' };
-    }
-
-    const response = await fetch(`${relayerUrl}/merchants/verify-contact-otp`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${accessToken}`,
-      },
-      body: JSON.stringify({ merchantId, contactEmail, token }),
-    });
-
-    const body = await response.json().catch(() => ({}));
-
-    if (!response.ok) {
-      return { success: false, error: body?.error || 'Invalid or expired verification code' };
-    }
-
-    return { success: true, verificationStatus: body?.verificationStatus };
-  } catch (error: any) {
-    Logger.error('verifyMerchantContactOtp error:', error);
-    return { success: false, error: error.message || 'Failed to verify code' };
-  }
-}
-
+// Never call signInWithOtp while a session exists without checking
+// getSessionSwapBlockReason() above.
