@@ -8,7 +8,8 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import QRCode from 'react-native-qrcode-svg';
-import { generatePaymentQR } from '../utils/qrCode';
+import { supabase } from '../services/supabase';
+import { generatePaymentQR, generateSignedQRPayload } from '../utils/qrCode';
 import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../constants/theme';
 import { MONEY_UNIT_LABEL } from '../utils/currency';
 import { Screen, FormField, Button } from '../components';
@@ -25,10 +26,31 @@ export const QRGeneratorScreen: React.FC<QRGeneratorScreenProps> = ({ navigation
   const [merchantAddress, setMerchantAddress] = useState('GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF');
   const [note, setNote] = useState('');
   const [qrData, setQrData] = useState('');
+  const [isGenerating, setIsGenerating] = useState(false);
 
-  const handleGenerateQR = () => {
-    const data = generatePaymentQR(merchantAddress, amount, merchantName, note || undefined);
-    setQrData(data);
+  const handleGenerateQR = async () => {
+    setIsGenerating(true);
+
+    try {
+      const { data } = await supabase.auth.getSession();
+      const bearerToken = data.session?.access_token ?? '';
+      const merchantId = data.session?.user?.id ?? 'merchant-local';
+
+      const signedQr = await generateSignedQRPayload(
+        merchantId,
+        amount,
+        merchantName,
+        merchantAddress,
+        bearerToken,
+        note || undefined,
+      );
+
+      setQrData(signedQr);
+    } catch {
+      setQrData(generatePaymentQR(merchantAddress, amount, merchantName, note || undefined));
+    } finally {
+      setIsGenerating(false);
+    }
   };
 
   // Generate QR on mount with default values
@@ -80,12 +102,13 @@ export const QRGeneratorScreen: React.FC<QRGeneratorScreenProps> = ({ navigation
         />
 
         <Button
-          title="Generate QR Code"
+          title={isGenerating ? 'Generating...' : 'Generate QR Code'}
           onPress={handleGenerateQR}
           variant="primary"
           size="lg"
           fullWidth
           style={styles.generateButton}
+          disabled={isGenerating}
         />
       </View>
 

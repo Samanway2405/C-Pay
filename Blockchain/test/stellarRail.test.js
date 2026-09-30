@@ -10,6 +10,8 @@ describe('stellarRail validation', () => {
   test('validates Stellar key formats', () => {
     const keypair = StellarSdk.Keypair.random();
 
+
+    
     expect(isValidPublicKey(keypair.publicKey())).toBe(true);
     expect(isValidSecret(keypair.secret())).toBe(true);
     expect(isValidPublicKey('not-a-stellar-account')).toBe(false);
