@@ -1,5 +1,7 @@
 import { Logger } from '../utils/logger';
 import React, { useState, useEffect } from 'react';
+
+// Scan screen: QR and address capture for wallet transfers.
 import {
   View,
   Text,
