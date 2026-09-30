@@ -1,3 +1,4 @@
+import { Logger } from './logger';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { supabase } from '../services/supabase';
 
@@ -139,7 +140,7 @@ export async function getCurrentUserCPayId(): Promise<string | null> {
 
     return generatedId || localId;
   } catch (error) {
-    console.error('Error getting current user C-Pay ID:', error);
+    Logger.error('Error getting current user C-Pay ID:', error);
     const walletAddress = await AsyncStorage.getItem('wallet_address');
     if (!walletAddress) {
       return null;
@@ -172,7 +173,7 @@ export async function getCPayIdByWallet(walletAddress: string): Promise<string |
 
     return null;
   } catch (error) {
-    console.error('Error fetching C-Pay ID:', error);
+    Logger.error('Error fetching C-Pay ID:', error);
     return null;
   }
 }
@@ -261,7 +262,7 @@ export async function getWalletAddressFromCPayId(cpayId: string): Promise<string
 
     return null;
   } catch (error) {
-    console.error('Error getting wallet address from C-Pay ID:', error);
+    Logger.error('Error getting wallet address from C-Pay ID:', error);
     return null;
   }
 }

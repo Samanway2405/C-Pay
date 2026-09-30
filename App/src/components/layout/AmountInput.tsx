@@ -9,7 +9,7 @@ import {
   StyleProp,
   ViewStyle,
 } from 'react-native';
-import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS } from '../../constants/theme';
+import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS, createThemedStyles, useTheme } from '../../constants/theme';
 import { MONEY_SYMBOL, MONEY_UNIT_LABEL } from '../../utils/currency';
 import { A11Y } from '../../utils/strings';
 
@@ -54,6 +54,7 @@ export const AmountInput = forwardRef<TextInput, AmountInputProps>(
     },
     ref
   ) => {
+  useTheme();
     const hasError = !!error;
 
     return (
@@ -124,7 +125,7 @@ export const AmountInput = forwardRef<TextInput, AmountInputProps>(
 
 AmountInput.displayName = 'AmountInput';
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles((COLORS) => ({
   label: {
     fontSize: FONT_SIZES.md,
     fontWeight: '600',
@@ -162,7 +163,7 @@ const styles = StyleSheet.create({
   unit: {
     fontSize: FONT_SIZES.md,
     fontWeight: '600',
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     marginLeft: SPACING.sm,
   },
   quickRow: {
@@ -191,10 +192,10 @@ const styles = StyleSheet.create({
   },
   helper: {
     fontSize: FONT_SIZES.sm,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     marginTop: SPACING.xs,
   },
   errorText: {
     color: COLORS.error,
   },
-});
+}));

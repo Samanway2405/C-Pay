@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
-import { COLORS, SPACING, TYPOGRAPHY } from '../constants/theme';
+import { COLORS, SPACING, TYPOGRAPHY, createThemedStyles, useTheme } from '../constants/theme';
 
 export type OnboardingFlowType = 'setup' | 'restore';
 
@@ -13,6 +13,7 @@ export const OnboardingProgress: React.FC<OnboardingProgressProps> = ({
   currentStep,
   flowType = 'setup',
 }) => {
+  useTheme();
   const steps = flowType === 'setup'
     ? [
         { label: 'Email', number: 1 },
@@ -80,7 +81,7 @@ export const OnboardingProgress: React.FC<OnboardingProgressProps> = ({
   );
 };
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles((COLORS) => ({
   container: {
     paddingHorizontal: SPACING.md,
     marginVertical: SPACING.md,
@@ -148,7 +149,7 @@ const styles = StyleSheet.create({
   },
   stepLabel: {
     fontSize: 10,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     textAlign: 'center',
     fontWeight: '500',
   },
@@ -156,4 +157,4 @@ const styles = StyleSheet.create({
     color: COLORS.text,
     fontWeight: 'bold',
   },
-});
+}));

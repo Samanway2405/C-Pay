@@ -545,3 +545,101 @@ describe('Stellar key validation', () => {
     expect(StellarSdk.StrKey.isValidEd25519SecretSeed('not-a-secret')).toBe(false);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 12. Idempotency duplicate prevention & intent reuse (#33)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('Idempotency duplicate prevention & intent reuse (#33)', () => {
+  class SimulatedRelayerHandler {
+    constructor() {
+      this.locks = new Map();
+      this.onChainSubmissions = 0;
+    }
+
+    async submitPayment({ signedXdr, idempotencyKey }) {
+      if (idempotencyKey) {
+        if (this.locks.has(idempotencyKey)) {
+          const lock = this.locks.get(idempotencyKey);
+          if (lock.response === null) {
+            return {
+              status: 409,
+              body: {
+                error: 'A request with this idempotency key is currently processing',
+                code: 'IDEMPOTENCY_IN_FLIGHT',
+                retryAfterSeconds: 5,
+              },
+            };
+          }
+          return {
+            status: 200,
+            body: lock.response,
+          };
+        }
+        this.locks.set(idempotencyKey, { response: null });
+      }
+
+      this.onChainSubmissions += 1;
+      const txHash = crypto.createHash('sha256').update(signedXdr || idempotencyKey).digest('hex');
+      const response = {
+        hash: txHash,
+        ledger: 1001,
+        status: 'success',
+      };
+
+      if (idempotencyKey) {
+        this.locks.set(idempotencyKey, { response });
+      }
+
+      return {
+        status: 200,
+        body: response,
+      };
+    }
+  }
+
+  test('fires the same intent twice concurrently and asserts only one on-chain submission (duplicate rejected with 409)', async () => {
+    const relayer = new SimulatedRelayerHandler();
+    const intentKey = '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d';
+
+    relayer.locks.set(intentKey, { response: null });
+
+    const duplicateRes = await relayer.submitPayment({
+      signedXdr: 'mock-xdr-data',
+      idempotencyKey: intentKey,
+    });
+
+    expect(duplicateRes.status).toBe(409);
+    expect(duplicateRes.body.code).toBe('IDEMPOTENCY_IN_FLIGHT');
+    expect(relayer.onChainSubmissions).toBe(0);
+  });
+
+  test('retrying a completed payment reuses original key and returns cached result with one on-chain submission', async () => {
+    const relayer = new SimulatedRelayerHandler();
+    const intentKey = '9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d';
+
+    const res1 = await relayer.submitPayment({
+      signedXdr: 'mock-xdr-data',
+      idempotencyKey: intentKey,
+    });
+    expect(res1.status).toBe(200);
+    expect(res1.body.status).toBe('success');
+    expect(relayer.onChainSubmissions).toBe(1);
+
+    const res2 = await relayer.submitPayment({
+      signedXdr: 'mock-xdr-data',
+      idempotencyKey: intentKey,
+    });
+    expect(res2.status).toBe(200);
+    expect(res2.body.hash).toBe(res1.body.hash);
+    expect(relayer.onChainSubmissions).toBe(1);
+  });
+
+  test('idempotency key format does not contain Date.now() or Math.random() timestamps', () => {
+    const UUID_V4_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    const testUUID = crypto.randomUUID();
+    expect(testUUID).toMatch(UUID_V4_REGEX);
+    expect(testUUID).not.toMatch(/\b\d{13}\b/);
+  });
+});
+

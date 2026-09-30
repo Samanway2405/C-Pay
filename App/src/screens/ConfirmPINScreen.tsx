@@ -1,3 +1,4 @@
+import { Logger } from '../utils/logger';
 import React, { useRef, useState } from 'react';
 
 // Confirm PIN screen: final wallet confirmation before activation.
@@ -14,7 +15,7 @@ import { OnboardingProgress } from '../components/OnboardingProgress';
 import { Screen } from '../components';
 import { cachePinForSession, createWallet } from '../services/wallet';
 import { supabase } from '../services/supabase';
-import { COLORS, SPACING, TYPOGRAPHY } from '../constants/theme';
+import { COLORS, SPACING, TYPOGRAPHY, createThemedStyles, useTheme } from '../constants/theme';
 import { AlertManager } from '../utils/alert';
 import { generateCPayId } from '../utils/cpayId';
 
@@ -49,10 +50,10 @@ const saveInitialUserRecord = (
         );
 
       if (dbError) {
-        console.error('Database error:', dbError);
+        Logger.error('Database error:', dbError);
       }
     } catch (error) {
-      console.error('Database save failed:', error);
+      Logger.error('Database save failed:', error);
     }
   })();
 };
@@ -66,6 +67,7 @@ export const ConfirmPINScreen: React.FC<ConfirmPINScreenProps> = ({
   navigation,
   route,
 }) => {
+  useTheme();
   const { pin: originalPin, phoneNumber } = route.params;
   const [confirmPin, setConfirmPin] = useState('');
   const [error, setError] = useState('');
@@ -117,7 +119,7 @@ export const ConfirmPINScreen: React.FC<ConfirmPINScreenProps> = ({
         phoneNumber: phoneNumber || '',
       });
     } catch (err) {
-      console.error('Wallet creation error:', err);
+      Logger.error('Wallet creation error:', err);
       AlertManager.alert('Error', 'Failed to create wallet. Please try again.');
       setConfirmPin('');
       submittingRef.current = false;
@@ -171,7 +173,7 @@ export const ConfirmPINScreen: React.FC<ConfirmPINScreenProps> = ({
   );
 };
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles((COLORS) => ({
   content: {
     flex: 1,
     paddingHorizontal: SPACING.lg,
@@ -195,7 +197,7 @@ const styles = StyleSheet.create({
   },
   subtitle: {
     fontSize: FONT_SIZES.md,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     textAlign: 'center',
   },
   pinSection: {
@@ -208,6 +210,6 @@ const styles = StyleSheet.create({
   loadingText: {
     marginTop: SPACING.md,
     fontSize: FONT_SIZES.md,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
   },
-});
+}));

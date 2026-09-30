@@ -9,7 +9,7 @@ import {
   Image,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { COLORS, SPACING, TYPOGRAPHY, SHADOWS } from '../constants/theme';
+import { COLORS, SPACING, TYPOGRAPHY, SHADOWS, createThemedStyles, useTheme } from '../constants/theme';
 import { Button, Screen, BottomActionBar } from '../components';
 import { PILOT_TESTNET_TEXT } from '../utils/pilot';
 
@@ -22,6 +22,7 @@ interface OnboardingScreenProps {
 }
 
 export const OnboardingScreen: React.FC<OnboardingScreenProps> = ({ navigation }) => {
+  useTheme();
   const handleGetStarted = () => {
     navigation.navigate('EmailVerification');
   };
@@ -93,7 +94,7 @@ const FeatureItem: React.FC<FeatureItemProps> = ({ icon, title, description }) =
   </View>
 );
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles((COLORS) => ({
   header: {
     alignItems: 'center',
     marginBottom: isSmallDevice ? SPACING.sm : SPACING.lg,
@@ -112,7 +113,7 @@ const styles = StyleSheet.create({
   },
   subtitle: {
     fontSize: isSmallDevice ? FONT_SIZES.xs : FONT_SIZES.sm,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     textAlign: 'center',
   },
   featuresContainer: {
@@ -143,13 +144,13 @@ const styles = StyleSheet.create({
   },
   featureDescription: {
     fontSize: isSmallDevice ? FONT_SIZES.xs : FONT_SIZES.sm,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     lineHeight: isSmallDevice ? 16 : 18,
   },
   disclaimer: {
     fontSize: FONT_SIZES.xs,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     textAlign: 'center',
     marginTop: SPACING.sm,
   },
-});
+}));

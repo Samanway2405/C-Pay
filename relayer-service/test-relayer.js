@@ -21,7 +21,7 @@ async function main() {
     network: health.network,
     sponsor: health.sponsorPublicKey,
     sponsorXlmBalance: health.sponsorXlmBalance,
-    distributionCpinrBalance: health.distributionCpinrBalance,
+    distributionUsdcBalance: health.distributionUsdcBalance,
   });
 
   if (TEST_ACCOUNT) {

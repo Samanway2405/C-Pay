@@ -1,121 +1,57 @@
-# C-Pay Stellar Blockchain Setup
+# C-Pay Stellar rail
 
-This folder owns the Stellar asset setup and payment rail helpers used by C-Pay.
+This package contains the Stellar transaction helpers and operator setup for
+Circle-issued USDC. C-Pay does not issue, mint, administer, or claim to back a
+currency.
 
-The design is:
+## Canonical asset
 
-- `CPINR` is the Stellar issued asset for INR-denominated C-Pay balances.
-- The app never stores issuer or distribution secrets.
-- The relayer verifies Stellar payments and sponsors account/trustline creation.
+| Network | Code | Circle issuer |
+| --- | --- | --- |
+| Testnet | `USDC` | `GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5` |
+| Public | `USDC` | `GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN` |
 
-## Folder Layout
+The code rejects any different issuer for these networks. The testnet issuer is
+documented by Stellar and test tokens come from the
+[Circle Faucet](https://faucet.circle.com/); they have no monetary value.
 
-```text
-Blockchain/
-  scripts/create-keypairs.js Generates Stellar keypairs for setup
-  scripts/setup-testnet-asset.js Issues CPINR on Stellar testnet
-  src/config.js              Shared Stellar config helpers
-  src/stellarRail.js         Transaction helper functions
-  test/stellarRail.test.js   JavaScript helper tests
-```
+## Operator accounts
 
-## Accounts
+- `SPONSOR_SECRET` pays account reserves and fee bumps.
+- `DISTRIBUTION_SECRET` controls only USDC already held by the distribution
+  account. It has no ability to issue USDC.
 
-`ASSET_ISSUER` creates the `CPINR` asset. Keep this account cold, use multisig for production, and never use it from the mobile app or hot backend payment flow.
-
-`ASSET_DISTRIBUTION` receives the issued `CPINR` supply and handles operational distribution. Keep only the amount needed for operations in this account.
-
-## Required Tools
-
-- Node.js 18 or newer
-- npm
-
-## Environment Variables
-
-Create `Blockchain/.env` from `.env.example`.
-
-| Variable | Purpose |
-| --- | --- |
-| `STELLAR_NETWORK` | `testnet` for test setup, `public` for production |
-| `STELLAR_HORIZON_URL` | Horizon endpoint for classic Stellar payments |
-| `STELLAR_NETWORK_PASSPHRASE` | Network passphrase used for transaction XDR |
-| `STELLAR_BASE_FEE` | Classic Stellar base fee in stroops |
-| `ASSET_CODE` | Asset code, currently `CPINR` |
-| `ASSET_ISSUER_PUBLIC_KEY` | Public key of the issuer account |
-| `ASSET_DISTRIBUTION_PUBLIC_KEY` | Public key of the distribution account |
-| `ASSET_ISSUER_SECRET` | Testnet setup only; do not keep online in production |
-| `ASSET_DISTRIBUTION_SECRET` | Testnet setup only; backend-only if used operationally |
-| `INITIAL_SUPPLY` | Testnet amount issued to distribution |
-| `TRUSTLINE_LIMIT` | Distribution account trustline limit |
-| `ASSET_HOME_DOMAIN` | Optional Stellar asset home domain |
-| `LOCK_ISSUER_AFTER_SETUP` | `true` disables further testnet issuance after setup |
-
-## Generate Keys
-
-For local testnet setup:
+Generate development accounts with:
 
 ```bash
 npm run create:keypairs
 ```
 
-The script prints:
-
-- `ASSET_ISSUER_PUBLIC_KEY` and `ASSET_ISSUER_SECRET`
-- `ASSET_DISTRIBUTION_PUBLIC_KEY` and `ASSET_DISTRIBUTION_SECRET`
-
-For production, generate the issuer and distribution accounts using your secure key-management process. Do not rely on printed terminal secrets for production custody.
-
-## Testnet Asset Setup
-
-Install dependencies in `Blockchain/`:
-
-```bash
-npm install
-```
-
-Set these `.env` values first:
+Configure a distribution trustline:
 
 ```text
 STELLAR_NETWORK=testnet
-ASSET_CODE=CPINR
-ASSET_ISSUER_PUBLIC_KEY=<issuer public key>
-ASSET_DISTRIBUTION_PUBLIC_KEY=<distribution public key>
-ASSET_ISSUER_SECRET=<issuer secret>
-ASSET_DISTRIBUTION_SECRET=<distribution secret>
-INITIAL_SUPPLY=1000000000
+STELLAR_HORIZON_URL=https://horizon-testnet.stellar.org
+STELLAR_NETWORK_PASSPHRASE=Test SDF Network ; September 2015
+USDC_ASSET_ISSUER=GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5
+DISTRIBUTION_PUBLIC_KEY=<distribution public key>
+DISTRIBUTION_SECRET=<distribution secret>
 TRUSTLINE_LIMIT=1000000000
 ```
 
-Run:
-
 ```bash
-npm run setup:testnet
+npm run setup:usdc
 ```
 
-This funds the issuer and distribution accounts on testnet, creates the distribution trustline, and sends the initial `CPINR` supply from issuer to distribution.
+The setup command creates or verifies the Circle USDC trustline. It never issues
+an asset. On testnet, fund the distribution address separately through Circle's
+faucet. On the public network, funding must come from an approved provider flow.
 
-## Payment Flow
+## Library flow
 
-1. App requests sponsored account creation / trustline from relayer.
-2. User or merchant shares wallet address / C-Pay ID / QR code.
-3. App signs a Stellar `CPINR` payment transaction.
-4. Relayer submits or fee-bumps the payment if the product flow requires sponsored fees.
-5. Horizon confirms the transaction and app shows payment receipt.
+1. Create or load the user Stellar account.
+2. Add a trustline to the canonical Circle USDC asset.
+3. Sign USDC payments locally with the user's key.
+4. Optionally wrap signed payments in a sponsored fee-bump transaction.
 
-Stellar account balances and Horizon payment records remain the payment source of truth.
-
-## Production Rules
-
-- Keep issuer secrets offline after asset setup.
-- Use multisig for issuer account.
-- Keep distribution balances capped by policy.
-- Do not put any secret seed in the mobile app.
-- Run JavaScript helper tests before deployment.
-
-## Verification
-
-Run JavaScript helper tests:
-
-```bash
-npm test
-```
+Amounts are valid to seven decimal places, matching Stellar's stroop precision.

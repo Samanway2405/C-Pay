@@ -8,7 +8,7 @@ import {
   ViewStyle,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS } from '../../constants/theme';
+import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS, createThemedStyles, useTheme } from '../../constants/theme';
 
 export type InfoBannerVariant = 'info' | 'success' | 'warning' | 'error';
 
@@ -24,15 +24,15 @@ export interface InfoBannerProps {
   style?: StyleProp<ViewStyle>;
 }
 
-const VARIANT_STYLES: Record<
+const getVariantStyles = (): Record<
   InfoBannerVariant,
   { bg: string; fg: string; icon: keyof typeof Ionicons.glyphMap }
-> = {
+> => ({
   info: { bg: COLORS.infoBg, fg: COLORS.info, icon: 'information-circle' },
   success: { bg: COLORS.successBg, fg: COLORS.success, icon: 'checkmark-circle' },
   warning: { bg: COLORS.warningBg, fg: COLORS.warning, icon: 'warning' },
   error: { bg: COLORS.errorBg, fg: COLORS.error, icon: 'alert-circle' },
-};
+});
 
 /**
  * Inline contextual banner for info / success / warning / error messaging with
@@ -48,7 +48,8 @@ export const InfoBanner: React.FC<InfoBannerProps> = ({
   onActionPress,
   style,
 }) => {
-  const v = VARIANT_STYLES[variant];
+  useTheme();
+  const v = getVariantStyles()[variant];
 
   // Compose a complete accessible description for the banner so screen readers
   // announce the variant, title and message together.
@@ -102,7 +103,7 @@ export const InfoBanner: React.FC<InfoBannerProps> = ({
   );
 };
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles((COLORS) => ({
   container: {
     flexDirection: 'row',
     borderRadius: BORDER_RADIUS.md,
@@ -122,7 +123,7 @@ const styles = StyleSheet.create({
   },
   message: {
     fontSize: FONT_SIZES.sm,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     lineHeight: 20,
   },
   action: {
@@ -136,4 +137,4 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignSelf: 'flex-start',
   },
-});
+}));

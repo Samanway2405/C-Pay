@@ -8,7 +8,7 @@ import {
   Animated,
   ActivityIndicator,
 } from 'react-native';
-import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS, SHADOWS } from '../constants/theme';
+import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS, SHADOWS, createThemedStyles, useTheme } from '../constants/theme';
 import { PINInput } from './PINInput';
 
 interface PINDialogProps {
@@ -26,6 +26,7 @@ export const PINDialog: React.FC<PINDialogProps> = ({
   title = 'Enter PIN',
   message = 'Enter your 6-digit PIN to confirm',
 }) => {
+  useTheme();
   const [pin, setPin] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const scaleAnim = useRef(new Animated.Value(0)).current;
@@ -118,10 +119,10 @@ export const PINDialog: React.FC<PINDialogProps> = ({
   );
 };
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles((COLORS) => ({
   overlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    backgroundColor: COLORS.overlay,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -142,7 +143,7 @@ const styles = StyleSheet.create({
   },
   message: {
     fontSize: FONT_SIZES.md,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     textAlign: 'center',
     marginBottom: SPACING.xl,
   },
@@ -179,4 +180,4 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: COLORS.textInverse,
   },
-});
+}));

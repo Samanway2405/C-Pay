@@ -34,7 +34,9 @@ describe('getPinAttemptState', () => {
 
   test('returns zeroed state when nothing is stored', async () => {
     const { getPinAttemptState } = require('../../services/wallet');
-    const state = await getPinAttemptState();
+    const result = await getPinAttemptState();
+    expect(result.status).toBe('available');
+    const state = result.state;
     expect(state.attempts).toBe(0);
     expect(state.lockedUntil).toBe(0);
   });
@@ -44,18 +46,28 @@ describe('getPinAttemptState', () => {
     const { getPinAttemptState } = require('../../services/wallet');
     const stored = { attempts: 3, lockedUntil: Date.now() + 60_000 };
     await SecureStoreMock.setItemAsync('cpay_pin_attempts', JSON.stringify(stored));
-    const state = await getPinAttemptState();
+    const result = await getPinAttemptState();
+    expect(result.status).toBe('available');
+    const state = result.state;
     expect(state.attempts).toBe(3);
     expect(state.lockedUntil).toBeGreaterThan(Date.now());
   });
 
-  test('handles corrupt stored data gracefully', async () => {
+  test('treats corrupt stored data as unknown and therefore locked', async () => {
     const SecureStoreMock = getSecureStoreMock();
     const { getPinAttemptState } = require('../../services/wallet');
     await SecureStoreMock.setItemAsync('cpay_pin_attempts', 'not-valid-json{{');
     const state = await getPinAttemptState();
-    expect(state.attempts).toBe(0);
-    expect(state.lockedUntil).toBe(0);
+    expect(state.status).toBe('unknown');
+  });
+
+  test('treats a SecureStore read failure as unknown', async () => {
+    const SecureStoreMock = getSecureStoreMock();
+    const { getPinAttemptState } = require('../../services/wallet');
+    jest.spyOn(SecureStoreMock, 'getItemAsync').mockRejectedValueOnce(new Error('read failed'));
+
+    const state = await getPinAttemptState();
+    expect(state).toEqual({ status: 'unknown' });
   });
 });
 
@@ -71,6 +83,16 @@ describe('recordFailedPinAttempt', () => {
     expect(s1.attempts).toBe(1);
     const s2 = await recordFailedPinAttempt();
     expect(s2.attempts).toBe(2);
+  });
+
+  test('locks out when the SecureStore write fails', async () => {
+    const SecureStoreMock = getSecureStoreMock();
+    const { recordFailedPinAttempt, MAX_LOCKOUT_MS } = require('../../services/wallet');
+    jest.spyOn(SecureStoreMock, 'setItemAsync').mockRejectedValueOnce(new Error('write failed'));
+
+    const state = await recordFailedPinAttempt();
+    expect(state.attempts).toBe(1);
+    expect(state.lockedUntil - Date.now()).toBeGreaterThan(MAX_LOCKOUT_MS - 1000);
   });
 
   test('does not set a lockout until MAX_PIN_ATTEMPTS is reached', async () => {
@@ -134,7 +156,9 @@ describe('clearPinAttempts', () => {
     await recordFailedPinAttempt();
     await recordFailedPinAttempt();
     await clearPinAttempts();
-    const state = await getPinAttemptState();
+    const result = await getPinAttemptState();
+    expect(result.status).toBe('available');
+    const state = result.state;
     expect(state.attempts).toBe(0);
     expect(state.lockedUntil).toBe(0);
   });
@@ -268,8 +292,9 @@ describe('verifyPin & getWallet — result discrimination & error handling', () 
       await recordFailedPinAttempt();
     }
 
-    const state = await getPinAttemptState();
-    expect(state.attempts).toBe(0);
+    const attemptState = await getPinAttemptState();
+    expect(attemptState.status).toBe('available');
+    expect(attemptState.state.attempts).toBe(0);
   });
 });
 
@@ -285,7 +310,9 @@ describe('clearWallet — removes PIN_ATTEMPTS_KEY', () => {
     await recordFailedPinAttempt();
     await clearWallet();
 
-    const state = await getPinAttemptState();
+    const result = await getPinAttemptState();
+    expect(result.status).toBe('available');
+    const state = result.state;
     expect(state.attempts).toBe(0);
     expect(state.lockedUntil).toBe(0);
   });
@@ -302,14 +329,18 @@ describe('PIN_ATTEMPTS_KEY persists across module reloads', () => {
     const w1 = require('../../services/wallet');
     await w1.recordFailedPinAttempt();
     await w1.recordFailedPinAttempt();
-    const before = await w1.getPinAttemptState();
+    const beforeResult = await w1.getPinAttemptState();
+    expect(beforeResult.status).toBe('available');
+    const before = beforeResult.state;
     expect(before.attempts).toBe(2);
 
     // Reset only the wallet module (not SecureStore mock), simulating restart.
     jest.isolateModules(() => { /* no-op — just to scope */ });
     // Re-require wallet but keep the same SecureStore mock instance.
     const w2 = require('../../services/wallet');
-    const after = await w2.getPinAttemptState();
+    const afterResult = await w2.getPinAttemptState();
+    expect(afterResult.status).toBe('available');
+    const after = afterResult.state;
     // Both w1 and w2 point to the same module in this Jest run because we
     // didn't call jest.resetModules() again, so the store is intact.
     expect(after.attempts).toBe(2);

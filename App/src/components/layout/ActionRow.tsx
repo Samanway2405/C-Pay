@@ -8,7 +8,7 @@ import {
   ViewStyle,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS } from '../../constants/theme';
+import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS, createThemedStyles, useTheme } from '../../constants/theme';
 
 export interface ActionRowProps {
   /** Leading icon, shown in a tinted circular badge. */
@@ -55,6 +55,7 @@ export const ActionRow: React.FC<ActionRowProps> = ({
   accessibilityHint,
   style,
 }) => {
+  useTheme();
   const chevron = showChevron ?? !!onPress;
   const tint = destructive ? COLORS.error : iconColor || COLORS.primary;
   const badgeBg = destructive ? COLORS.errorBg : iconBackground || COLORS.primaryLight;
@@ -130,7 +131,7 @@ export const ActionRow: React.FC<ActionRowProps> = ({
   );
 };
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles((COLORS) => ({
   row: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -165,7 +166,7 @@ const styles = StyleSheet.create({
   },
   subtitle: {
     fontSize: FONT_SIZES.sm,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     marginTop: 2,
   },
   trailing: {
@@ -175,9 +176,9 @@ const styles = StyleSheet.create({
   },
   value: {
     fontSize: FONT_SIZES.md,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
   },
   chevronSpacing: {
     marginLeft: SPACING.xs,
   },
-});
+}));

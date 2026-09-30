@@ -9,7 +9,7 @@
     "splash": {
       "image": "./assets/cpay_logo.png",
       "resizeMode": "contain",
-      "backgroundColor": "#6366f1"
+      "backgroundColor": "#2563EB"
     },
     "assetBundlePatterns": [
       "**/*"
@@ -27,7 +27,7 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/cpay_logo.png",
-        "backgroundColor": "#6366f1"
+        "backgroundColor": "#2563EB"
       },
       "package": "com.cryptopay.app",
       "versionCode": 5,
@@ -82,13 +82,9 @@
       "EXPO_PUBLIC_STELLAR_HORIZON_URL": "https://horizon-testnet.stellar.org",
       "EXPO_PUBLIC_STELLAR_NETWORK_PASSPHRASE": "Test SDF Network ; September 2015",
       "EXPO_PUBLIC_STELLAR_RELAYER_URL": "https://<your-relayer-domain>",
-      "EXPO_PUBLIC_CPINR_ASSET_CODE": "CPINR",
-      "EXPO_PUBLIC_CPINR_ASSET_ISSUER": "@cpinrAssetIssuer@",
+      "EXPO_PUBLIC_USDC_ASSET_ISSUER": "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
       "EXPO_PUBLIC_STELLAR_EXPLORER_URL": "https://stellar.expert/explorer/testnet",
       "EXPO_PUBLIC_PILOT_MODE": "true",
-      "EXPO_PUBLIC_PILOT_CREDIT_NAME": "C-Pay pilot credits",
-      "EXPO_PUBLIC_PILOT_CREDIT_UNIT": "credits",
-      "EXPO_PUBLIC_PILOT_CREDIT_SYMBOL": "Cr",
       "EXPO_PUBLIC_PILOT_ACCESS_CODE": ""
     }
   }
