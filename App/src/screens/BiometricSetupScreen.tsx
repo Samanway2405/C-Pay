@@ -1,5 +1,7 @@
 import { Logger } from '../utils/logger';
 import React, { useState, useEffect } from 'react';
+
+// Biometric setup screen: security onboarding flow for wallet access.
 import {
   View,
   Text,

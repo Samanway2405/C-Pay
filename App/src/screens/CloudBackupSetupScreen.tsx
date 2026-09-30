@@ -1,5 +1,7 @@
 import { Logger } from '../utils/logger';
 import React, { useRef, useState } from 'react';
+
+// Cloud backup setup screen: protects recovery and account continuity.
 import {
   ActivityIndicator,
   StyleSheet,

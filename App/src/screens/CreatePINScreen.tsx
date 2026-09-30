@@ -1,4 +1,6 @@
 import React, { useRef, useState } from 'react';
+
+// Create PIN screen: first step in wallet security setup.
 import {
   View,
   Text,
