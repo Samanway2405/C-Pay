@@ -1,3 +1,4 @@
+import { Logger } from '../utils/logger';
 import React, { useState, useEffect } from 'react';
 
 // Scan screen: QR and address capture for wallet transfers.
@@ -24,7 +25,7 @@ import {
   QRVerificationStatus,
 } from '../utils/qrCode';
 import { isValidAccountId } from '../services/blockchain';
-import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS } from '../constants/theme';
+import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS, createThemedStyles, useTheme } from '../constants/theme';
 import { AlertManager } from '../utils/alert';
 
 interface ScanScreenProps {
@@ -48,26 +49,26 @@ const VerificationBadge: React.FC<VerificationBadgeProps> = ({ status, reason })
     verified: {
       icon: 'shield-checkmark',
       label: 'Verified merchant',
-      bg: 'rgba(5,150,105,0.9)',   // success green
-      text: '#FFFFFF',
+      bg: COLORS.successOverlay,   // success green
+      text: COLORS.textInverse,
     },
     unverified: {
       icon: 'shield-outline',
       label: 'Unverified (legacy QR)',
-      bg: 'rgba(217,119,6,0.9)',   // warning amber
-      text: '#FFFFFF',
+      bg: COLORS.warningOverlay,   // warning amber
+      text: COLORS.textInverse,
     },
     expired: {
       icon: 'time-outline',
       label: 'QR code expired',
-      bg: 'rgba(220,38,38,0.9)',   // error red
-      text: '#FFFFFF',
+      bg: COLORS.errorOverlay,   // error red
+      text: COLORS.textInverse,
     },
     invalid: {
       icon: 'close-circle',
       label: reason || 'Invalid QR',
-      bg: 'rgba(220,38,38,0.9)',
-      text: '#FFFFFF',
+      bg: COLORS.errorOverlay,
+      text: COLORS.textInverse,
     },
   };
 
@@ -86,6 +87,7 @@ const VerificationBadge: React.FC<VerificationBadgeProps> = ({ status, reason })
 // ---------------------------------------------------------------------------
 
 export const ScanScreen: React.FC<ScanScreenProps> = ({ navigation, route }) => {
+  useTheme();
   const insets = useSafeAreaInsets();
   const { width, height } = useWindowDimensions();
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
@@ -265,7 +267,7 @@ export const ScanScreen: React.FC<ScanScreenProps> = ({ navigation, route }) => 
         hideBalance: route?.params?.returnTo !== 'SendMoney',
       });
     } catch (error) {
-      console.error('Error processing QR code:', error);
+      Logger.error('Error processing QR code:', error);
       setLoading(false);
       setVerifying(false);
       AlertManager.alert('Error', 'Failed to process QR code. Please try again.', [
@@ -305,7 +307,7 @@ export const ScanScreen: React.FC<ScanScreenProps> = ({ navigation, route }) => 
         });
       }
     } catch (error) {
-      console.error('Error picking image:', error);
+      Logger.error('Error picking image:', error);
       setLoading(false);
       AlertManager.alert('Error', 'Failed to scan QR code from this image.', [
         { text: 'Try Again', onPress: resetScan },
@@ -406,7 +408,7 @@ export const ScanScreen: React.FC<ScanScreenProps> = ({ navigation, route }) => 
   );
 };
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles((COLORS) => ({
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
@@ -424,13 +426,13 @@ const styles = StyleSheet.create({
     right: 0,
     paddingHorizontal: SPACING.lg,
     paddingBottom: SPACING.md,
-    backgroundColor: 'rgba(0,0,0,0.7)',
+    backgroundColor: COLORS.overlayStrong,
     zIndex: 1,
   },
   headerText: {
     fontSize: FONT_SIZES.xl,
     fontWeight: '600',
-    color: '#FFFFFF',
+    color: COLORS.textInverse,
     textAlign: 'center',
   },
   overlay: {
@@ -455,7 +457,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     width: 40,
     height: 40,
-    borderColor: '#FFFFFF',
+    borderColor: COLORS.textInverse,
   },
   cornerTopLeft: {
     top: 0,
@@ -508,13 +510,13 @@ const styles = StyleSheet.create({
     right: 0,
     paddingHorizontal: SPACING.lg,
     paddingTop: SPACING.md,
-    backgroundColor: 'rgba(0,0,0,0.7)',
+    backgroundColor: COLORS.overlayStrong,
     alignItems: 'center',
     zIndex: 1,
   },
   instruction: {
     fontSize: FONT_SIZES.md,
-    color: '#FFFFFF',
+    color: COLORS.textInverse,
     textAlign: 'center',
     marginBottom: SPACING.md,
     fontWeight: '500',
@@ -534,33 +536,33 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: SPACING.xs,
-    backgroundColor: 'rgba(255,255,255,0.2)',
+    backgroundColor: COLORS.whiteOverlay,
     paddingHorizontal: SPACING.xl,
     paddingVertical: SPACING.md,
     borderRadius: BORDER_RADIUS.md,
     borderWidth: 2,
-    borderColor: '#FFFFFF',
+    borderColor: COLORS.textInverse,
     flex: 1,
   },
   galleryButtonText: {
     fontSize: FONT_SIZES.md,
     fontWeight: '600',
-    color: '#FFFFFF',
+    color: COLORS.textInverse,
     textAlign: 'center',
   },
   cancelButton: {
-    backgroundColor: 'rgba(255,255,255,0.2)',
+    backgroundColor: COLORS.whiteOverlay,
     paddingHorizontal: SPACING.xl,
     paddingVertical: SPACING.md,
     borderRadius: BORDER_RADIUS.md,
     borderWidth: 2,
-    borderColor: '#FFFFFF',
+    borderColor: COLORS.textInverse,
     flex: 1,
   },
   cancelButtonText: {
     fontSize: FONT_SIZES.md,
     fontWeight: '600',
-    color: '#FFFFFF',
+    color: COLORS.textInverse,
     textAlign: 'center',
   },
   message: {
@@ -572,7 +574,7 @@ const styles = StyleSheet.create({
   },
   submessage: {
     fontSize: FONT_SIZES.md,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     textAlign: 'center',
     marginBottom: SPACING.xl,
     paddingHorizontal: SPACING.lg,
@@ -586,6 +588,6 @@ const styles = StyleSheet.create({
   buttonText: {
     fontSize: FONT_SIZES.md,
     fontWeight: '600',
-    color: '#FFFFFF',
+    color: COLORS.textInverse,
   },
-});
+}));

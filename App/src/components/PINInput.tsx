@@ -7,7 +7,7 @@ import {
 } from 'react-native';
 import type { TextInputProps } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../constants/theme';
+import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS, createThemedStyles, useTheme } from '../constants/theme';
 
 const FONT_SIZES = TYPOGRAPHY.sizes;
 
@@ -40,6 +40,7 @@ export const PINInput: React.FC<PINInputProps> = memo(({
   textContentType = 'none',
   autoComplete = 'off',
 }) => {
+  useTheme();
   const inputRef = useRef<TextInput | null>(null);
   const lastCompletedPin = useRef('');
   const [isFocused, setIsFocused] = useState(false);
@@ -142,7 +143,7 @@ export const PINInput: React.FC<PINInputProps> = memo(({
   );
 });
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles((COLORS) => ({
   container: {
     alignItems: 'center',
     width: '100%',
@@ -244,4 +245,4 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     textAlign: 'center',
   },
-});
+}));

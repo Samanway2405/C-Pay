@@ -1,3 +1,4 @@
+import { Logger } from '../utils/logger';
 import { supabase } from './supabase';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { clearSessionPin } from './wallet';
@@ -30,6 +31,70 @@ interface OTPRateLimit {
   attempts: number;
   lastAttempt: string; // ISO date string
   resetDate: string; // ISO date string
+}
+
+/**
+ * Guard against silently destroying the user's only wallet recovery path (issue #2).
+ *
+ * `supabase.auth.signInWithOtp` / `verifyOtp` mint a session for the address
+ * being verified, which changes `auth.uid()`. `wallet_backups` is
+ * UNIQUE(auth_user_id) with RLS scoped to `auth.uid()`, so once the session
+ * belongs to a different auth user, `getCloudWalletBackup()` returns nothing
+ * and the encrypted seed is unreachable — silent, unrecoverable data loss.
+ *
+ * This resolves to a blocking error whenever a session already exists, that
+ * session owns a wallet backup, and the address being verified is not the one
+ * the session already belongs to. Re-verifying the *same* address is safe: the
+ * resulting session is the same auth user, so the backup stays bound.
+ *
+ * Returns null when the OTP is safe to send, or an error message to surface.
+ */
+export async function getSessionSwapBlockReason(email: string): Promise<string | null> {
+  try {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const session = sessionData?.session;
+
+    // No session to displace — onboarding / login. Nothing to lose.
+    if (!session?.user) {
+      return null;
+    }
+
+    const currentEmail = session.user.email?.trim().toLowerCase();
+    const targetEmail = email.trim().toLowerCase();
+
+    // Same address: verifying it again yields the same auth user.
+    if (currentEmail && currentEmail === targetEmail) {
+      return null;
+    }
+
+    // A different address would swap auth.uid(). Only block if this auth user
+    // actually has a backup bound to it — otherwise there is nothing to lose.
+    const { data: backup, error } = await supabase
+      .from('wallet_backups')
+      .select('id')
+      .eq('auth_user_id', session.user.id)
+      .maybeSingle();
+
+    if (error) {
+      // Fail closed: we could not prove the backup is safe, so do not risk it.
+      Logger.error('Wallet backup guard lookup failed:', error);
+      return 'Could not confirm your wallet backup is safe, so this verification was stopped. Check your connection and try again.';
+    }
+
+    if (!backup) {
+      return null;
+    }
+
+    return (
+      `Verifying ${email} would sign you in as a different account and disconnect ` +
+      `the encrypted wallet backup saved under ${currentEmail || 'your current email'}. ` +
+      `That backup is the only way to recover this wallet. ` +
+      `Sign out and restore your wallet first if you really want to use a different email.`
+    );
+  } catch (error: any) {
+    Logger.error('Wallet backup guard error:', error);
+    return 'Could not confirm your wallet backup is safe, so this verification was stopped. Please try again.';
+  }
 }
 
 /**
@@ -71,7 +136,7 @@ async function checkRateLimit(): Promise<{
       remainingAttempts: MAX_OTP_ATTEMPTS_PER_DAY - rateLimit.attempts,
     };
   } catch (error) {
-    console.error('Error checking rate limit:', error);
+    Logger.error('Error checking rate limit:', error);
     return { allowed: true, remainingAttempts: MAX_OTP_ATTEMPTS_PER_DAY };
   }
 }
@@ -107,7 +172,7 @@ async function incrementAttempt(): Promise<void> {
 
     await AsyncStorage.setItem(OTP_RATE_LIMIT_KEY, JSON.stringify(rateLimit));
   } catch (error) {
-    console.error('Error incrementing attempt:', error);
+    Logger.error('Error incrementing attempt:', error);
   }
 }
 
@@ -124,6 +189,12 @@ export async function sendLoginEmailOTP(email: string): Promise<{
   resetTime?: Date;
 }> {
   try {
+    // Never swap the auth session out from under a bound wallet backup.
+    const blockReason = await getSessionSwapBlockReason(email);
+    if (blockReason) {
+      return { success: false, error: blockReason };
+    }
+
     const rateLimitCheck = await checkRateLimit();
 
     if (!rateLimitCheck.allowed) {
@@ -160,7 +231,7 @@ export async function sendLoginEmailOTP(email: string): Promise<{
       remainingAttempts: rateLimitCheck.remainingAttempts - 1,
     };
   } catch (error: any) {
-    console.error('Send login email OTP error:', error);
+    Logger.error('Send login email OTP error:', error);
     return {
       success: false,
       error: error.message || 'Failed to send email OTP',
@@ -180,6 +251,13 @@ export async function verifyLoginEmailOTP(
   error?: string;
 }> {
   try {
+    // verifyOtp is what actually mints the new session, so the guard is
+    // enforced here too — not only on the send path.
+    const blockReason = await getSessionSwapBlockReason(verificationId);
+    if (blockReason) {
+      return { success: false, error: blockReason };
+    }
+
     const { data, error } = await supabase.auth.verifyOtp({
       email: verificationId,
       token: otpCode,
@@ -198,7 +276,7 @@ export async function verifyLoginEmailOTP(
       email: data.user?.email || verificationId,
     };
   } catch (error: any) {
-    console.error('Verify login email OTP error:', error);
+    Logger.error('Verify login email OTP error:', error);
     return {
       success: false,
       error: error.message || 'Invalid email OTP code',
@@ -236,170 +314,12 @@ export async function signOut(): Promise<void> {
   clearSessionPin();
 }
 
-/**
- * Send OTP to email address (for merchant registration)
- */
-export async function sendEmailOTP(email: string): Promise<{
-  success: boolean;
-  verificationId?: string;
-  error?: string;
-}> {
-  try {
-    // Production: Send email OTP via Supabase
-    // Note: This requires setting up email templates in Supabase dashboard
-    const { error } = await supabase.auth.signInWithOtp({
-      email: email,
-      options: {
-        shouldCreateUser: true,
-      }
-    });
-
-    if (error) {
-      return {
-        success: false,
-        error: error.message,
-      };
-    }
-
-    return {
-      success: true,
-      verificationId: email,
-    };
-  } catch (error: any) {
-    console.error('Send email OTP error:', error);
-    return {
-      success: false,
-      error: error.message || 'Failed to send email OTP',
-    };
-  }
-}
-
-/**
- * Verify email OTP (for merchant registration)
- */
-export async function verifyEmailOTP(
-  verificationId: string,
-  otpCode: string
-): Promise<{
-  success: boolean;
-  email?: string;
-  error?: string;
-}> {
-  try {
-    // Production: Verify with Supabase
-    const { data, error } = await supabase.auth.verifyOtp({
-      email: verificationId,
-      token: otpCode,
-      type: 'email',
-    });
-
-    if (error) {
-      return {
-        success: false,
-        error: error.message,
-      };
-    }
-
-    return {
-      success: true,
-      email: data.user?.email || verificationId,
-    };
-  } catch (error: any) {
-    console.error('Verify email OTP error:', error);
-    return {
-      success: false,
-      error: error.message || 'Invalid email OTP code',
-    };
-  }
-}
-
-/**
- * Send a merchant contact email OTP via the relayer's Admin API path.
- * This does NOT call supabase.auth.signInWithOtp — the wallet owner's
- * Supabase session is never modified.
- *
- * Requires a provisional merchantId (from the just-inserted merchants row)
- * and the business contact email to verify.
- */
-export async function sendMerchantContactOtp(
-  merchantId: string,
-  contactEmail: string
-): Promise<{ success: boolean; error?: string }> {
-  try {
-    const { data } = await supabase.auth.getSession();
-    const accessToken = data.session?.access_token;
-    if (!accessToken) {
-      return { success: false, error: 'No active session — please log in again' };
-    }
-
-    const relayerUrl = (process.env.EXPO_PUBLIC_STELLAR_RELAYER_URL || '').replace(/\/+$/, '');
-    if (!relayerUrl) {
-      return { success: false, error: 'Relayer URL not configured' };
-    }
-
-    const response = await fetch(`${relayerUrl}/merchants/send-contact-otp`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${accessToken}`,
-      },
-      body: JSON.stringify({ merchantId, contactEmail }),
-    });
-
-    const body = await response.json().catch(() => ({}));
-
-    if (!response.ok) {
-      return { success: false, error: body?.error || 'Failed to send verification code' };
-    }
-
-    return { success: true };
-  } catch (error: any) {
-    console.error('sendMerchantContactOtp error:', error);
-    return { success: false, error: error.message || 'Failed to send verification code' };
-  }
-}
-
-/**
- * Verify a merchant contact email OTP via the relayer.
- * On success the relayer marks contact_email_verified = true on the merchants
- * row and auto-approves the merchant in pilot mode.
- */
-export async function verifyMerchantContactOtp(
-  merchantId: string,
-  contactEmail: string,
-  token: string
-): Promise<{ success: boolean; verificationStatus?: string; error?: string }> {
-  try {
-    const { data } = await supabase.auth.getSession();
-    const accessToken = data.session?.access_token;
-    if (!accessToken) {
-      return { success: false, error: 'No active session — please log in again' };
-    }
-
-    const relayerUrl = (process.env.EXPO_PUBLIC_STELLAR_RELAYER_URL || '').replace(/\/+$/, '');
-    if (!relayerUrl) {
-      return { success: false, error: 'Relayer URL not configured' };
-    }
-
-    const response = await fetch(`${relayerUrl}/merchants/verify-contact-otp`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${accessToken}`,
-      },
-      body: JSON.stringify({ merchantId, contactEmail, token }),
-    });
-
-    const body = await response.json().catch(() => ({}));
-
-    if (!response.ok) {
-      return { success: false, error: body?.error || 'Invalid or expired verification code' };
-    }
-
-    return { success: true, verificationStatus: body?.verificationStatus };
-  } catch (error: any) {
-    console.error('verifyMerchantContactOtp error:', error);
-    return { success: false, error: error.message || 'Failed to verify code' };
-  }
-}
-
+// Note on session swapping (issue #2 / #32):
+//
+// Calling supabase.auth.signInWithOtp / verifyOtp while a session already exists
+// replaces the session and changes auth.uid(), orphaning the user's wallet_backups row
+// (UNIQUE(auth_user_id), RLS scoped to auth.uid()) and silently destroying their only
+// wallet recovery path.
+//
+// Never call signInWithOtp while a session exists without checking
+// getSessionSwapBlockReason() above.

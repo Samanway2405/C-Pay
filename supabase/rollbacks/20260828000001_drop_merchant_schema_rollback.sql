@@ -30,8 +30,8 @@ CREATE TABLE IF NOT EXISTS merchants (
     total_transactions INTEGER NOT NULL DEFAULT 0,
     total_revenue NUMERIC(20, 7) NOT NULL DEFAULT 0,
     stellar_network TEXT NOT NULL DEFAULT 'testnet',
-    cpinr_asset_code TEXT NOT NULL DEFAULT 'CPINR',
-    cpinr_asset_issuer TEXT,
+    asset_code TEXT NOT NULL DEFAULT 'USDC',
+    asset_issuer TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
@@ -42,7 +42,7 @@ CREATE TABLE IF NOT EXISTS merchant_qr_codes (
     merchant_id UUID REFERENCES merchants(id) ON DELETE CASCADE,
     qr_name TEXT NOT NULL,
     amount NUMERIC(20, 7),
-    asset_code TEXT NOT NULL DEFAULT 'CPINR',
+    asset_code TEXT NOT NULL DEFAULT 'USDC',
     asset_issuer TEXT,
     is_active BOOLEAN NOT NULL DEFAULT TRUE,
     scan_count INTEGER NOT NULL DEFAULT 0,
@@ -238,8 +238,8 @@ RETURNS TABLE (
   total_transactions INTEGER,
   total_revenue NUMERIC,
   stellar_network TEXT,
-  cpinr_asset_code TEXT,
-  cpinr_asset_issuer TEXT,
+  asset_code TEXT,
+  asset_issuer TEXT,
   created_at TIMESTAMPTZ,
   updated_at TIMESTAMPTZ
 ) AS $$
@@ -267,8 +267,8 @@ RETURNS TABLE (
     m.total_transactions,
     m.total_revenue,
     m.stellar_network,
-    m.cpinr_asset_code,
-    m.cpinr_asset_issuer,
+    m.asset_code,
+    m.asset_issuer,
     m.created_at,
     m.updated_at
   FROM merchants m

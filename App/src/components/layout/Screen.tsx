@@ -12,7 +12,7 @@ import {
   Text,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { COLORS, SPACING, FONT_SIZES } from '../../constants/theme';
+import { COLORS, SPACING, FONT_SIZES, createThemedStyles, useTheme } from '../../constants/theme';
 import { useResponsive } from '../../hooks/useResponsive';
 
 export interface ScreenProps {
@@ -68,6 +68,7 @@ export const Screen: React.FC<ScreenProps> = ({
   refreshControl,
   testID,
 }) => {
+  useTheme();
   const insets = useSafeAreaInsets();
   const { gutter, maxContentWidth, isTablet } = useResponsive();
 
@@ -153,7 +154,7 @@ export const Screen: React.FC<ScreenProps> = ({
   );
 };
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles((COLORS) => ({
   root: {
     flex: 1,
   },
@@ -169,7 +170,7 @@ const styles = StyleSheet.create({
   loadingText: {
     marginTop: SPACING.md,
     fontSize: FONT_SIZES.md,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     textAlign: 'center',
   },
-});
+}));

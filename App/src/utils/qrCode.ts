@@ -1,3 +1,4 @@
+import { Logger } from './logger';
 import { getNetworkConfig, isValidAccountId } from '../services/blockchain';
 
 // ---------------------------------------------------------------------------
@@ -243,7 +244,7 @@ export function parsePaymentQR(qrString: string): PaymentQRData | null {
 
     return null;
   } catch (error) {
-    console.error('Invalid QR code format:', error);
+    Logger.error('Invalid QR code format:', error);
     return null;
   }
 }

@@ -9,7 +9,7 @@ import {
   Dimensions,
   Platform,
 } from 'react-native';
-import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS, SHADOWS } from '../constants/theme';
+import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS, SHADOWS, createThemedStyles, useTheme } from '../constants/theme';
 import { AlertManager } from '../utils/alert';
 
 const { width, height } = Dimensions.get('window');
@@ -37,6 +37,7 @@ export const CustomAlert: React.FC<CustomAlertProps> = ({
   type = 'info',
   onDismiss,
 }) => {
+  useTheme();
   const [fadeAnim] = useState(new Animated.Value(0));
   const [scaleAnim] = useState(new Animated.Value(0.9));
 
@@ -212,10 +213,10 @@ export const CustomAlert: React.FC<CustomAlertProps> = ({
   );
 };
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles((COLORS) => ({
   overlay: {
     flex: 1,
-    backgroundColor: 'rgba(15, 23, 42, 0.48)',
+    backgroundColor: COLORS.overlayLight,
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -257,7 +258,7 @@ const styles = StyleSheet.create({
   },
   message: {
     fontSize: FONT_SIZES.md,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     textAlign: 'center',
     lineHeight: 22,
     marginBottom: SPACING.lg,
@@ -278,7 +279,7 @@ const styles = StyleSheet.create({
   buttonText: {
     fontSize: FONT_SIZES.md,
     fontWeight: '600',
-    color: '#FFFFFF',
+    color: COLORS.textInverse,
   },
   cancelButton: {
     backgroundColor: COLORS.surface,
@@ -300,7 +301,7 @@ const styles = StyleSheet.create({
   singleButton: {
     marginTop: SPACING.sm,
   },
-});
+}));
 
 // Helper function to show alert
 let alertInstance: {
@@ -322,6 +323,7 @@ export const showCustomAlert = (
 export const CustomAlertProvider: React.FC<{ children: React.ReactNode }> = ({
   children,
 }) => {
+  useTheme();
   const [alertConfig, setAlertConfig] = useState<Omit<
     CustomAlertProps,
     'visible' | 'onDismiss'

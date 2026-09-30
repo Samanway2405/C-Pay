@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, StyleSheet, StyleProp, ViewStyle } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { COLORS, SPACING } from '../../constants/theme';
+import { COLORS, SPACING, createThemedStyles, useTheme } from '../../constants/theme';
 
 export interface BottomActionBarProps {
   children: React.ReactNode;
@@ -24,6 +24,7 @@ export const BottomActionBar: React.FC<BottomActionBarProps> = ({
   backgroundColor = COLORS.surface,
   style,
 }) => {
+  useTheme();
   const insets = useSafeAreaInsets();
 
   return (
@@ -41,7 +42,7 @@ export const BottomActionBar: React.FC<BottomActionBarProps> = ({
   );
 };
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles((COLORS) => ({
   container: {
     paddingHorizontal: SPACING.lg,
     paddingTop: SPACING.md,
@@ -55,4 +56,4 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: SPACING.md,
   },
-});
+}));

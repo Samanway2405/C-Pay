@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS } from '../constants/theme';
+import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS, createThemedStyles, useTheme } from '../constants/theme';
 import { Button } from './Button';
 
 interface EmptyStateProps {
@@ -19,6 +19,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
   actionText,
   onAction,
 }) => {
+  useTheme();
   return (
     <View style={styles.container}>
       <View style={styles.iconContainer}>
@@ -39,7 +40,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
   );
 };
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles((COLORS) => ({
   container: {
     flex: 1,
     alignItems: 'center',
@@ -64,7 +65,7 @@ const styles = StyleSheet.create({
   },
   description: {
     fontSize: FONT_SIZES.md,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     textAlign: 'center',
     marginBottom: SPACING.xl,
     lineHeight: 22,
@@ -72,4 +73,4 @@ const styles = StyleSheet.create({
   button: {
     marginTop: SPACING.md,
   },
-});
+}));

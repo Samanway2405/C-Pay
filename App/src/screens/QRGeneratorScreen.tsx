@@ -9,7 +9,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import QRCode from 'react-native-qrcode-svg';
 import { generatePaymentQR } from '../utils/qrCode';
-import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS } from '../constants/theme';
+import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, SHADOWS, createThemedStyles, useTheme } from '../constants/theme';
 import { MONEY_UNIT_LABEL } from '../utils/currency';
 import { Screen, FormField, Button } from '../components';
 
@@ -20,6 +20,7 @@ interface QRGeneratorScreenProps {
 }
 
 export const QRGeneratorScreen: React.FC<QRGeneratorScreenProps> = ({ navigation }) => {
+  useTheme();
   const [merchantName, setMerchantName] = useState('Tea Stall');
   const [amount, setAmount] = useState('10.00');
   const [merchantAddress, setMerchantAddress] = useState('GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF');
@@ -96,7 +97,7 @@ export const QRGeneratorScreen: React.FC<QRGeneratorScreenProps> = ({ navigation
             <QRCode value={qrData} size={250} />
           </View>
           <View style={styles.instructionRow}>
-            <Ionicons name="scan-outline" size={18} color={COLORS.textSecondary} />
+            <Ionicons name="scan-outline" size={18} color={COLORS.textMuted} />
             <Text style={styles.instruction}>Use Scan to Pay on Home screen to test</Text>
           </View>
         </View>
@@ -105,7 +106,7 @@ export const QRGeneratorScreen: React.FC<QRGeneratorScreenProps> = ({ navigation
   );
 };
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles((COLORS) => ({
   header: {
     alignItems: 'center',
     marginBottom: SPACING.xl,
@@ -119,7 +120,7 @@ const styles = StyleSheet.create({
   },
   subtitle: {
     fontSize: FONT_SIZES.sm,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
   },
   form: {
     marginBottom: SPACING.xl,
@@ -142,7 +143,7 @@ const styles = StyleSheet.create({
   },
   instruction: {
     fontSize: FONT_SIZES.md,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     textAlign: 'center',
   },
   instructionRow: {
@@ -151,4 +152,4 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: SPACING.xs,
   },
-});
+}));

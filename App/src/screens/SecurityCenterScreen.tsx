@@ -1,3 +1,4 @@
+import { Logger } from '../utils/logger';
 import React, { useState } from 'react';
 
 // Security center screen: access protection and risk controls overview.
@@ -28,7 +29,7 @@ import {
 } from '../services/wallet';
 import { getTransactionLimitsStatus } from '../services/securityLimits';
 import { formatMoneyAmount } from '../utils/currency';
-import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS, SHADOWS } from '../constants/theme';
+import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS, SHADOWS, createThemedStyles, useTheme } from '../constants/theme';
 import { Screen, Header, Section, ActionRow, InfoBanner } from '../components';
 import { AlertManager } from '../utils/alert';
 
@@ -45,6 +46,7 @@ interface SecurityCenterScreenProps {
 }
 
 export const SecurityCenterScreen: React.FC<SecurityCenterScreenProps> = ({ navigation }) => {
+  useTheme();
   const [walletAddress, setWalletAddress] = useState('');
   const [biometricEnabled, setBiometricEnabled] = useState(false);
   const [biometricAvailable, setBiometricAvailable] = useState(false);
@@ -98,7 +100,7 @@ export const SecurityCenterScreen: React.FC<SecurityCenterScreenProps> = ({ navi
         if (!address) return;
         await supabase.from('users').update({ biometric_enabled: enabled }).eq('wallet_address', address);
       } catch (error) {
-        console.log('Failed to sync biometric preference:', error);
+        Logger.info('Failed to sync biometric preference:', error);
       }
     })();
   };
@@ -143,7 +145,7 @@ export const SecurityCenterScreen: React.FC<SecurityCenterScreenProps> = ({ navi
       }
     } catch (error) {
       setBiometricEnabled(!value);
-      console.error('Biometric setting update failed:', error);
+      Logger.error('Biometric setting update failed:', error);
       AlertManager.alert('Biometric Error', 'Could not update biometric unlock. Please try again.', undefined, { type: 'error' });
     } finally {
       biometricSavingRef.current = false;
@@ -274,7 +276,7 @@ export const SecurityCenterScreen: React.FC<SecurityCenterScreenProps> = ({ navi
                 onValueChange={handleToggleBiometric}
                 disabled={biometricSaving}
                 trackColor={{ false: COLORS.border, true: COLORS.primary + '50' }}
-                thumbColor={biometricEnabled ? COLORS.primary : COLORS.textSecondary}
+                thumbColor={biometricEnabled ? COLORS.primary : COLORS.textMuted}
               />
             }
           />
@@ -371,7 +373,7 @@ export const SecurityCenterScreen: React.FC<SecurityCenterScreenProps> = ({ navi
                 <Ionicons name="key-outline" size={24} color={isSecret ? COLORS.warning : COLORS.primary} />
               </View>
               <TouchableOpacity onPress={handleCloseExportedKey} style={styles.exportCloseButton}>
-                <Ionicons name="close" size={22} color={COLORS.textSecondary} />
+                <Ionicons name="close" size={22} color={COLORS.textMuted} />
               </TouchableOpacity>
             </View>
 
@@ -411,7 +413,7 @@ export const SecurityCenterScreen: React.FC<SecurityCenterScreenProps> = ({ navi
   );
 };
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles((COLORS) => ({
   gap: {
     marginBottom: SPACING.lg,
   },
@@ -481,7 +483,7 @@ const styles = StyleSheet.create({
   },
   exportDescription: {
     fontSize: FONT_SIZES.sm,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     lineHeight: 20,
     marginBottom: SPACING.md,
   },
@@ -511,7 +513,7 @@ const styles = StyleSheet.create({
   exportKeyLabel: {
     fontSize: FONT_SIZES.xs,
     fontWeight: '700',
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     textTransform: 'uppercase',
     marginBottom: SPACING.xs,
   },
@@ -557,4 +559,4 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: COLORS.textInverse,
   },
-});
+}));

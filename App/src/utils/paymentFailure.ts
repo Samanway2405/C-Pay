@@ -2,7 +2,7 @@
  * How the user can recover from a payment failure:
  * - `retryable`: a plain retry is likely to succeed (network/timeout/service).
  * - `support`: retrying won't help on its own — the user needs to fix
- *   something (re-auth, merchant setup) or contact support.
+ *   something (re-auth, wallet setup) or contact support.
  */
 export type PaymentFailureCategory = 'retryable' | 'support';
 
@@ -17,12 +17,13 @@ export type PaymentFailureCopy = {
 const SUPPORT_CODES = new Set([
   'AUTH_REQUIRED',
   'WALLET_OWNERSHIP_DENIED',
-  'MERCHANT_OWNERSHIP_DENIED',
-  'CONTRACT_MERCHANT_MISSING',
-  'CONTRACT_MERCHANT_INACTIVE',
-  'CONTRACT_MERCHANT_MISMATCH',
+  'NO_WALLETS_BOUND',
+  'SPONSORSHIP_LIMIT_EXCEEDED',
+  'ADD_MONEY_DISABLED',
+  'RELAYER_URL_MISSING',
   'CONTRACT_INTENT_SOURCE_MISMATCH',
   'CONTRACT_INTENT_AMOUNT_MISMATCH',
+  'PAYMENT_AMOUNT_EXCEEDED',
 ]);
 
 const classifyCategory = (errorCode: string | undefined, lowerMessage: string): PaymentFailureCategory => {
@@ -37,7 +38,7 @@ const classifyCategory = (errorCode: string | undefined, lowerMessage: string): 
   return 'retryable';
 };
 
-const safeNoDeductionText = 'Your pilot credits are safe - no amount was deducted.';
+const safeNoDeductionText = 'Your USDC is safe - no amount was deducted.';
 
 const getErrorText = (error: any): string => {
   const candidates = [
@@ -76,34 +77,106 @@ const buildFailureCopy = (error: any): Omit<PaymentFailureCopy, 'category'> => {
     };
   }
 
-  if (errorCode === 'MERCHANT_OWNERSHIP_DENIED') {
+  if (errorCode === 'WALLET_OWNERSHIP_UNAVAILABLE') {
     return {
-      errorMessage: 'Merchant Not Authorised',
-      errorReason: 'The merchant wallet used in this request does not belong to your account. Sign out, sign back in, and try again.',
+      errorMessage: 'Wallet Service Unavailable',
+      errorReason: `Wallet ownership service is temporarily unavailable. ${safeNoDeductionText} Please try again in a few moments.`,
       errorCode,
     };
   }
 
-  if (errorCode === 'CONTRACT_MERCHANT_MISSING') {
+  if (errorCode === 'NO_WALLETS_BOUND') {
     return {
-      errorMessage: 'Merchant Not Ready',
-      errorReason: 'This merchant has not finished C-Pay contract setup yet. Ask the merchant to open their app and sync their merchant account before accepting QR payments.',
+      errorMessage: 'No Wallet Linked',
+      errorReason: 'No wallet is linked to your account. Set up or link a wallet before submitting transactions.',
       errorCode,
     };
   }
 
-  if (errorCode === 'CONTRACT_MERCHANT_INACTIVE') {
+  if (errorCode === 'WALLET_BINDING_FAILED') {
     return {
-      errorMessage: 'Merchant Inactive',
-      errorReason: 'This merchant is currently inactive on C-Pay. Ask the merchant to reactivate their merchant account.',
+      errorMessage: 'Wallet Setup Failed',
+      errorReason: `Failed to link wallet to your account. ${safeNoDeductionText} Please try again.`,
       errorCode,
     };
   }
 
-  if (errorCode === 'CONTRACT_MERCHANT_MISMATCH') {
+  if (errorCode === 'SPONSORSHIP_LIMIT_EXCEEDED') {
     return {
-      errorMessage: 'QR Code Mismatch',
-      errorReason: 'This merchant QR code does not match the merchant account registered with C-Pay. Ask the merchant to generate a fresh QR code.',
+      errorMessage: 'Sponsorship Limit Reached',
+      errorReason: 'You have reached the maximum number of sponsored accounts for this user.',
+      errorCode,
+    };
+  }
+
+  if (errorCode === 'IDEMPOTENCY_IN_FLIGHT') {
+    return {
+      errorMessage: 'Payment In Progress',
+      errorReason: 'A transaction request is already being processed. Please wait a few moments before trying again.',
+      errorCode,
+    };
+  }
+
+  if (errorCode === 'ADD_MONEY_DISABLED') {
+    return {
+      errorMessage: 'Add Money Disabled',
+      errorReason: 'Add Money is currently disabled for this network.',
+      errorCode,
+    };
+  }
+
+  if (errorCode === 'ADD_MONEY_PERSISTENCE_UNAVAILABLE') {
+    return {
+      errorMessage: 'Service Unavailable',
+      errorReason: `Add Money persistence is temporarily unavailable. ${safeNoDeductionText} Please try again in a few moments.`,
+      errorCode,
+    };
+  }
+
+  if (errorCode === 'ADD_MONEY_IN_FLIGHT') {
+    return {
+      errorMessage: 'Request In Progress',
+      errorReason: 'An Add Money request is already in progress for this account. Please wait a few moments.',
+      errorCode,
+    };
+  }
+
+  if (errorCode === 'ADD_MONEY_COOLDOWN') {
+    return {
+      errorMessage: 'Cooldown Active',
+      errorReason: 'Add Money is cooling down for this account. Please try again later.',
+      errorCode,
+    };
+  }
+
+  if (errorCode === 'ADD_MONEY_DAILY_CAP_EXCEEDED') {
+    return {
+      errorMessage: 'Daily Limit Reached',
+      errorReason: 'The daily Add Money limit has been reached for this account. Please try again later.',
+      errorCode,
+    };
+  }
+
+  if (errorCode === 'ACCOUNT_NOT_READY') {
+    return {
+      errorMessage: 'Account Not Ready',
+      errorReason: 'The account is not ready to receive balance yet. Please try again in a few moments.',
+      errorCode,
+    };
+  }
+
+  if (errorCode === 'DISTRIBUTION_LOW_ASSET') {
+    return {
+      errorMessage: 'Service Unavailable',
+      errorReason: `The distribution account has insufficient funds to fulfill this request. ${safeNoDeductionText} Please try again later.`,
+      errorCode,
+    };
+  }
+
+  if (errorCode === 'RELAYER_URL_MISSING') {
+    return {
+      errorMessage: 'Configuration Error',
+      errorReason: 'Payment service URL is not configured. Please contact support.',
       errorCode,
     };
   }
@@ -120,6 +193,46 @@ const buildFailureCopy = (error: any): Omit<PaymentFailureCopy, 'category'> => {
     return {
       errorMessage: 'Payment Amount Changed',
       errorReason: `The QR payment request was created for a different amount than the payment being sent. ${safeNoDeductionText} Ask the merchant to generate a fresh QR code, then try again.`,
+      errorCode,
+    };
+  }
+
+  if (errorCode === 'PAYMENT_AMOUNT_EXCEEDED') {
+    return {
+      errorMessage: 'Amount Exceeds Limit',
+      errorReason: 'This payment exceeds the maximum allowed amount per transaction. Please enter a lower amount.',
+      errorCode,
+    };
+  }
+
+  if (errorCode === 'PAYMENT_DAILY_CAP_EXCEEDED') {
+    return {
+      errorMessage: 'Daily Payment Limit Reached',
+      errorReason: 'You have reached your daily payment limit. Please try again tomorrow.',
+      errorCode,
+    };
+  }
+
+  if (errorCode === 'PAYMENT_DAILY_COUNT_EXCEEDED') {
+    return {
+      errorMessage: 'Daily Transaction Limit Reached',
+      errorReason: 'You have reached the maximum number of transactions allowed today. Please try again tomorrow.',
+      errorCode,
+    };
+  }
+
+  if (errorCode === 'PAYMENT_VELOCITY_EXCEEDED') {
+    return {
+      errorMessage: 'Too Many Transactions',
+      errorReason: 'You are submitting payments too quickly. Please wait a moment before trying again.',
+      errorCode,
+    };
+  }
+
+  if (errorCode === 'PAYMENT_LIMITS_UNAVAILABLE') {
+    return {
+      errorMessage: 'Limits Service Unavailable',
+      errorReason: `Payment limits service is temporarily unavailable. ${safeNoDeductionText} Please try again in a few moments.`,
       errorCode,
     };
   }
@@ -144,7 +257,7 @@ const buildFailureCopy = (error: any): Omit<PaymentFailureCopy, 'category'> => {
   ) {
     return {
       errorMessage: 'Insufficient Balance',
-      errorReason: 'You do not have enough pilot credits or network balance to complete this payment.',
+      errorReason: 'You do not have enough USDC or network balance to complete this payment.',
       errorCode,
     };
   }

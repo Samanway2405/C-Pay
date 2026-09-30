@@ -7,7 +7,7 @@ import {
   StyleProp,
   ViewStyle,
 } from 'react-native';
-import { COLORS, SPACING, FONT_SIZES } from '../../constants/theme';
+import { COLORS, SPACING, FONT_SIZES, createThemedStyles, useTheme } from '../../constants/theme';
 
 export interface SectionProps {
   title?: string;
@@ -36,6 +36,7 @@ export const Section: React.FC<SectionProps> = ({
   style,
   headerStyle,
 }) => {
+  useTheme();
   const hasHeader = !!title || !!actionLabel;
 
   return (
@@ -67,7 +68,7 @@ export const Section: React.FC<SectionProps> = ({
   );
 };
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles((COLORS) => ({
   header: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -85,7 +86,7 @@ const styles = StyleSheet.create({
   },
   subtitle: {
     fontSize: FONT_SIZES.sm,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     marginTop: 2,
   },
   action: {
@@ -99,4 +100,4 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     paddingHorizontal: SPACING.xs,
   },
-});
+}));

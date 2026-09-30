@@ -1,6 +1,6 @@
 import React from 'react';
 import { View, ActivityIndicator, Text, StyleSheet } from 'react-native';
-import { COLORS, SPACING, FONT_SIZES } from '../constants/theme';
+import { COLORS, SPACING, FONT_SIZES, createThemedStyles, useTheme } from '../constants/theme';
 
 interface LoadingSpinnerProps {
   size?: 'small' | 'large';
@@ -15,6 +15,7 @@ export const LoadingSpinner: React.FC<LoadingSpinnerProps> = ({
   text,
   fullScreen = false,
 }) => {
+  useTheme();
   if (fullScreen) {
     return (
       <View style={styles.fullScreenContainer}>
@@ -32,7 +33,7 @@ export const LoadingSpinner: React.FC<LoadingSpinnerProps> = ({
   );
 };
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles((COLORS) => ({
   container: {
     alignItems: 'center',
     justifyContent: 'center',
@@ -47,7 +48,7 @@ const styles = StyleSheet.create({
   text: {
     marginTop: SPACING.md,
     fontSize: FONT_SIZES.sm,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     textAlign: 'center',
   },
-});
+}));

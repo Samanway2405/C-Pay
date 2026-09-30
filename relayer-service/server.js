@@ -23,13 +23,18 @@ const NETWORKS = {
   },
 };
 
+const USDC_ISSUERS = {
+  testnet: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
+  public: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
+};
+
 const config = loadConfig();
 const server = new StellarSdk.Horizon.Server(config.horizonUrl, {
   allowHttp: config.horizonUrl.startsWith('http://'),
 });
 const sponsorKeypair = StellarSdk.Keypair.fromSecret(config.sponsorSecret);
 const distributionKeypair = StellarSdk.Keypair.fromSecret(config.distributionSecret);
-const cpinrAsset = new StellarSdk.Asset(config.assetCode, config.assetIssuer);
+const usdcAsset = new StellarSdk.Asset(config.assetCode, config.assetIssuer);
 
 const { IngestWorker } = require('./ingestWorker');
 const ingestWorker = new IngestWorker({
@@ -113,7 +118,7 @@ app.get('/health/detailed', requireAuthenticatedUser, async (_req, res) => {
     sponsorPublicKey: sponsorKeypair.publicKey(),
     distributionPublicKey: distributionKeypair.publicKey(),
     sponsorXlmBalance: sponsorBalances.xlm,
-    distributionCpinrBalance: distributionBalances.asset,
+    distributionUsdcBalance: distributionBalances.asset,
     authRequired: config.authRequired,
     authApiConfigured: Boolean(config.supabaseUrl && config.supabaseServiceRoleKey),
     legacyJwtSecretConfigured: Boolean(config.supabaseJwtSecret),
@@ -128,9 +133,10 @@ app.get('/health/detailed', requireAuthenticatedUser, async (_req, res) => {
 
 app.get('/account/:accountId/status', requireAuthenticatedUser, requirePathWalletOwnership(), async (req, res) => {
   const accountId = assertAccountId(req.params.accountId, 'accountId');
+  const authUserId = req.auth && req.auth.sub ? req.auth.sub : null;
   const [status, retryAfterSeconds] = await Promise.all([
     getAccountStatus(accountId),
-    getAddMoneyRetryAfterSeconds(accountId),
+    getAddMoneyRetryAfterSeconds(accountId, authUserId),
   ]);
 
   res.json({
@@ -155,20 +161,52 @@ app.get('/account/:accountId/balance', requireAuthenticatedUser, requirePathWall
 app.post('/accounts/prepare', requireAuthenticatedUser, async (req, res) => {
   const accountId = assertAccountId(req.body.accountId, 'accountId');
 
-  if (config.authRequired && req.auth && req.auth.sub && isSupabasePersistenceEnabled()) {
-    try {
-      await supabaseRestRequest('wallet_bindings', {
-        method: 'POST',
-        headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
-        body: JSON.stringify({
-          auth_user_id: req.auth.sub,
-          wallet_address: accountId,
-        }),
+  if (config.authRequired) {
+    const authUid = req.auth && req.auth.sub;
+    if (!authUid) {
+      return res.status(401).json({
+        error: 'Authentication required',
+        code: 'AUTH_REQUIRED',
       });
-    } catch (err) {
-      console.error('Failed to bind wallet:', err.message);
+    }
+
+    const ownerResult = await resolveWalletOwner(accountId);
+    if (!ownerResult.configured || !ownerResult.ok) {
+      return sendWalletOwnershipUnavailable(res, ownerResult.error);
+    }
+
+    if (ownerResult.owner && ownerResult.owner !== authUid) {
+      return res.status(403).json({
+        error: 'You are not authorized to prepare this wallet (already bound to another user)',
+        code: 'WALLET_OWNERSHIP_DENIED',
+      });
+    }
+
+    if (!ownerResult.owner) {
+      const walletsResult = await resolveUserWallets(authUid);
+      if (!walletsResult.configured || !walletsResult.ok) {
+        return sendWalletOwnershipUnavailable(res, walletsResult.error);
+      }
+
+      if (walletsResult.wallets.length >= config.maxSponsoredAccountsPerUser) {
+        return res.status(403).json({
+          error: `Maximum sponsored accounts limit (${config.maxSponsoredAccountsPerUser}) reached for this user`,
+          code: 'SPONSORSHIP_LIMIT_EXCEEDED',
+          maxAccounts: config.maxSponsoredAccountsPerUser,
+        });
+      }
+
+      try {
+        await bindWalletToUser(authUid, accountId);
+      } catch (error) {
+        console.error('Failed to bind wallet:', error.message);
+        return sendWalletOwnershipUnavailable(res, error, 'WALLET_BINDING_FAILED');
+      }
     }
   }
+
+  // Check sponsor balance alarm
+  checkSponsorBalanceAlarm().catch(() => {});
 
   const status = await getAccountStatus(accountId);
 
@@ -198,7 +236,7 @@ app.post('/accounts/prepare', requireAuthenticatedUser, async (req, res) => {
   }
 
   builder.addOperation(StellarSdk.Operation.changeTrust({
-    asset: cpinrAsset,
+    asset: usdcAsset,
     limit: config.trustlineLimit,
     source: accountId,
   }));
@@ -269,7 +307,28 @@ app.post('/payments/submit', requireAuthenticatedUser, requireWalletOwnership(),
     });
   }
 
-  validatePaymentTransaction(innerTransaction);
+  const paymentDetails = validatePaymentTransaction(innerTransaction);
+
+  const authUid = req.auth && req.auth.sub;
+  const walletAddress = innerTransaction.source;
+
+  try {
+    await checkPaymentLimits(walletAddress, authUid, paymentDetails.amount);
+  } catch (limitErr) {
+    if (limitErr.statusCode) {
+      return res.status(limitErr.statusCode).json({
+        error: limitErr.message,
+        code: limitErr.code,
+        ...(limitErr.retryAfterSeconds ? { retryAfterSeconds: limitErr.retryAfterSeconds } : {}),
+        ...(limitErr.details || {}),
+      });
+    }
+    return res.status(503).json({
+      error: 'Payment limits service is temporarily unavailable',
+      code: 'PAYMENT_LIMITS_UNAVAILABLE',
+      retryable: true,
+    });
+  }
 
   const maxFee = (BigInt(config.baseFee) * BigInt(config.feeBumpMultiplier)).toString();
   const feeBump = StellarSdk.TransactionBuilder.buildFeeBumpTransaction(
@@ -281,6 +340,15 @@ app.post('/payments/submit', requireAuthenticatedUser, requireWalletOwnership(),
   feeBump.sign(sponsorKeypair);
 
   const result = await server.submitTransaction(feeBump);
+
+  await recordPaymentRecord({
+    walletAddress,
+    authUserId: authUid,
+    amount: paymentDetails.amount,
+    txHash: result.hash,
+  }).catch(err => {
+    console.error('Failed to record payment limits entry:', err.message);
+  });
 
   const response = {
     hash: result.hash,
@@ -295,6 +363,21 @@ app.post('/payments/submit', requireAuthenticatedUser, requireWalletOwnership(),
   res.json(response);
 });
 
+app.get(['/payments/limits', '/limits'], requireAuthenticatedUser, async (req, res) => {
+  try {
+    const authUid = req.auth && req.auth.sub;
+    const walletAddress = req.query.accountId || (req.resolvedWallets && req.resolvedWallets[0]);
+    const limits = await getPaymentLimitsStatus(authUid, walletAddress);
+    res.json(limits);
+  } catch (error) {
+    console.error('Failed to get payment limits:', error.message);
+    res.status(503).json({
+      error: 'Payment limits service is temporarily unavailable',
+      code: 'PAYMENT_LIMITS_UNAVAILABLE',
+    });
+  }
+});
+
 app.post('/add-money', requireAuthenticatedUser, requireWalletOwnership('accountId'), async (req, res) => {
   if (!config.addMoneyEnabled) {
     return res.status(403).json({
@@ -303,9 +386,19 @@ app.post('/add-money', requireAuthenticatedUser, requireWalletOwnership('account
     });
   }
 
+  if (!isSupabasePersistenceEnabled()) {
+    return res.status(503).json({
+      error: 'Add Money persistence is temporarily unavailable',
+      code: 'ADD_MONEY_PERSISTENCE_UNAVAILABLE',
+      retryable: true,
+    });
+  }
+
   const accountId = assertAccountId(req.body.accountId, 'accountId');
   const amount = normalizeAmount(req.body.amount || config.addMoneyAmount, config.maxAddMoneyAmount);
   const idempotencyKey = normalizeOptionalString(req.body.idempotencyKey);
+  const authUserId = req.auth && req.auth.sub ? req.auth.sub : null;
+  const userLockKey = `add-money-user:${authUserId || accountId}`;
 
   if (idempotencyKey) {
     const lock = await acquireIdempotencyLock(idempotencyKey, config.idempotencyTtlMs);
@@ -321,72 +414,101 @@ app.post('/add-money', requireAuthenticatedUser, requireWalletOwnership('account
     }
   }
 
-  const status = await getAccountStatus(accountId);
-  if (!status.exists || !status.hasTrustline) {
-    return res.status(409).json({
-      error: 'Account is not ready to receive Add Money balance',
-      code: 'ACCOUNT_NOT_READY',
-    });
-  }
-
-  const retryAfterSeconds = await getAddMoneyRetryAfterSeconds(accountId);
-  if (retryAfterSeconds > 0) {
+  // Acquire user-level lock to prevent concurrent claims (race condition)
+  const userLock = await acquireAddMoneyUserLock(userLockKey, config.transactionTimeoutSeconds * 1000 + 5000);
+  if (!userLock.acquired) {
     return res.status(429).json({
-      error: 'Add Money is cooling down for this account',
-      code: 'ADD_MONEY_COOLDOWN',
-      retryAfterSeconds,
+      error: 'An Add Money request is already in progress for this account',
+      code: 'ADD_MONEY_IN_FLIGHT',
+      retryAfterSeconds: 5,
     });
   }
 
-  const distributionBalances = await getBalances(distributionKeypair.publicKey());
-  if (Number(distributionBalances.asset || '0') < Number(amount)) {
-    return res.status(503).json({
-      error: `Add Money is temporarily unavailable because the relayer distribution account has insufficient ${config.assetCode}.`,
-      code: 'DISTRIBUTION_LOW_ASSET',
-      distributionBalance: distributionBalances.asset,
-      requiredAmount: amount,
-    });
-  }
+  try {
+    const retryAfterSeconds = await getAddMoneyRetryAfterSeconds(accountId, authUserId);
+    if (retryAfterSeconds > 0) {
+      return res.status(429).json({
+        error: 'Add Money is cooling down for this account',
+        code: 'ADD_MONEY_COOLDOWN',
+        retryAfterSeconds,
+      });
+    }
 
-  const distributionAccount = await server.loadAccount(distributionKeypair.publicKey());
-  const tx = new StellarSdk.TransactionBuilder(distributionAccount, {
-    fee: config.baseFee,
-    networkPassphrase: config.passphrase,
-  })
-    .addOperation(StellarSdk.Operation.payment({
-      destination: accountId,
-      asset: cpinrAsset,
+    const dailyCapCheck = await checkAddMoneyDailyCap(accountId, authUserId, amount);
+    if (!dailyCapCheck.allowed) {
+      return res.status(429).json({
+        error: 'Daily Add Money limit reached. Please try again later.',
+        code: 'ADD_MONEY_DAILY_CAP_EXCEEDED',
+        retryAfterSeconds: dailyCapCheck.retryAfterSeconds,
+        dailyCap: config.maxAddMoneyDailyCap,
+        claimedToday: dailyCapCheck.totalClaimed,
+      });
+    }
+
+    const status = await getAccountStatus(accountId);
+    if (!status.exists || !status.hasTrustline) {
+      return res.status(409).json({
+        error: 'Account is not ready to receive Add Money balance',
+        code: 'ACCOUNT_NOT_READY',
+      });
+    }
+
+    const distributionBalances = await getBalances(distributionKeypair.publicKey());
+    if (Number(distributionBalances.asset || '0') < Number(amount)) {
+      return res.status(503).json({
+        error: `Add Money is temporarily unavailable because the relayer distribution account has insufficient ${config.assetCode}.`,
+        code: 'DISTRIBUTION_LOW_ASSET',
+        distributionBalance: distributionBalances.asset,
+        requiredAmount: amount,
+      });
+    }
+
+    const claimId = crypto.randomUUID();
+    const nextAvailableAt = new Date(Date.now() + config.addMoneyCooldownMs).toISOString();
+    await reserveAddMoneyClaim({
+      claimId,
+      walletAddress: accountId,
+      authUserId,
       amount,
-    }))
-    .addMemo(StellarSdk.Memo.text('add-money'))
-    .setTimeout(config.transactionTimeoutSeconds)
-    .build();
+      idempotencyKey,
+      nextAvailableAt,
+    });
 
-  tx.sign(distributionKeypair);
+    const distributionAccount = await server.loadAccount(distributionKeypair.publicKey());
+    const tx = new StellarSdk.TransactionBuilder(distributionAccount, {
+      fee: config.baseFee,
+      networkPassphrase: config.passphrase,
+    })
+      .addOperation(StellarSdk.Operation.payment({
+        destination: accountId,
+        asset: usdcAsset,
+        amount,
+      }))
+      .addMemo(StellarSdk.Memo.text('add-money'))
+      .setTimeout(config.transactionTimeoutSeconds)
+      .build();
 
-  const result = await server.submitTransaction(tx);
-  const response = {
-    hash: result.hash,
-    ledger: result.ledger,
-    status: 'success',
-    amount,
-    assetCode: config.assetCode,
-  };
+    tx.sign(distributionKeypair);
 
-  const nextAvailableAt = new Date(Date.now() + config.addMoneyCooldownMs).toISOString();
-  await recordAddMoneyClaim({
-    walletAddress: accountId,
-    amount,
-    txHash: result.hash,
-    idempotencyKey,
-    nextAvailableAt,
-  });
+    const result = await server.submitTransaction(tx);
+    const response = {
+      hash: result.hash,
+      ledger: result.ledger,
+      status: 'success',
+      amount,
+      assetCode: config.assetCode,
+    };
 
-  if (idempotencyKey) {
-    await setIdempotencyResponse(idempotencyKey, response, config.idempotencyTtlMs);
+    await settleAddMoneyClaim(claimId, result.hash);
+
+    if (idempotencyKey) {
+      await setIdempotencyResponse(idempotencyKey, response, config.idempotencyTtlMs);
+    }
+
+    return res.json(response);
+  } finally {
+    await releaseAddMoneyUserLock(userLockKey);
   }
-
-  res.json(response);
 });
 
 app.get('/tx/:hash', async (req, res) => {
@@ -433,31 +555,77 @@ app.use((error, _req, res, _next) => {
     error: stellarMessage || message,
     code,
     resultCodes,
+    retryable: error.retryable || undefined,
   });
 });
 
-const relayerHttpServer = app.listen(PORT, '0.0.0.0', () => {
+let relayerHttpServer = null;
+
+async function startRelayer() {
+  if (config.authRequired) {
+    await assertWalletBindingsReachable();
+  }
+
+  relayerHttpServer = await new Promise((resolve, reject) => {
+    const listener = app.listen(PORT, '0.0.0.0');
+    listener.once('error', reject);
+    listener.once('listening', () => resolve(listener));
+  });
+  relayerHttpServer.ref();
+
   console.log(`C-Pay Stellar relayer listening on port ${PORT}`);
   console.log(`Network: ${config.networkName}`);
   console.log(`Sponsor: ${sponsorKeypair.publicKey()}`);
   console.log(`Distribution: ${distributionKeypair.publicKey()}`);
-});
-relayerHttpServer.ref();
 
-// Start ledger ingest worker on startup (non-blocking)
-if (config.ledgerIngestEnabled && ingestWorker.isConfigured) {
-  ingestWorker.start('stream').catch(err => {
-    console.warn('Ingest worker startup warning:', err.message);
+  // Start ledger ingest worker on startup (non-blocking)
+  if (config.ledgerIngestEnabled && ingestWorker.isConfigured) {
+    ingestWorker.start('stream').catch(err => {
+      console.warn('Ingest worker startup warning:', err.message);
+    });
+  }
+
+  // Clean up expired persisted state on startup (non-blocking)
+  cleanExpiredPersistedState().catch(err => {
+    console.error('Startup cleanup of persisted state failed:', err.message);
   });
+  setInterval(() => cleanExpiredPersistedState().catch(() => {}), 60 * 60 * 1000).unref();
+
+  return relayerHttpServer;
 }
 
-// Clean up expired persisted state on startup (non-blocking)
-cleanExpiredPersistedState().catch(err => {
-  console.error('Startup cleanup of persisted state failed:', err.message);
+const startupPromise = startRelayer();
+startupPromise.catch(error => {
+  console.error('Relayer startup failed:', error.message);
+  if (require.main === module) {
+    process.exitCode = 1;
+  }
 });
-setInterval(() => cleanExpiredPersistedState().catch(() => {}), 60 * 60 * 1000).unref();
 
-module.exports = { app, server: relayerHttpServer, ingestWorker };
+module.exports = {
+  app,
+  get server() {
+    return relayerHttpServer;
+  },
+  startupPromise,
+  ingestWorker,
+  ...(process.env.NODE_ENV === 'test' ? {
+    testHooks: Object.freeze({
+      acquireAddMoneyUserLock,
+      releaseAddMoneyUserLock,
+      acquireIdempotencyLock,
+      getAddMoneyRetryAfterSeconds,
+      checkAddMoneyDailyCap,
+      reserveAddMoneyClaim,
+      settleAddMoneyClaim,
+      supabaseRestRequest,
+      checkPaymentLimits,
+      getPaymentLimitsStatus,
+      recordPaymentRecord,
+      inMemoryPaymentRecords,
+    }),
+  } : {}),
+};
 
 function loadConfig() {
   const networkName = (process.env.STELLAR_NETWORK || 'testnet').toLowerCase();
@@ -466,18 +634,24 @@ function loadConfig() {
   const passphrase = process.env.STELLAR_NETWORK_PASSPHRASE || network.passphrase;
   const sponsorSecret = requireEnv('SPONSOR_SECRET');
   const distributionSecret = requireEnv('DISTRIBUTION_SECRET');
-  const assetCode = process.env.CPINR_ASSET_CODE || 'CPINR';
-  const assetIssuer = requireEnv('CPINR_ASSET_ISSUER');
+  const assetCode = 'USDC';
+  const expectedUsdcIssuer = networkName === 'public' ? USDC_ISSUERS.public : USDC_ISSUERS.testnet;
+  const assetIssuer = process.env.USDC_ASSET_ISSUER || expectedUsdcIssuer;
   const authRequired = readBooleanEnv('RELAYER_AUTH_REQUIRED', networkName === 'public');
-  const addMoneyEnabled = readBooleanEnv('ENABLE_ADD_MONEY', networkName !== 'public');
+  // The legacy faucet is testnet-only and opt-in. It can never run on public network.
+  const addMoneyEnabled = networkName === 'testnet' && readBooleanEnv('ENABLE_TESTNET_FAUCET', false);
   const supabaseJwtSecret = process.env.SUPABASE_JWT_SECRET || '';
   const supabaseUrl = process.env.SUPABASE_URL || process.env.EXPO_PUBLIC_SUPABASE_URL || '';
   const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || '';
 
   assertTrustedHorizonUrl(horizonUrl);
 
-  if (authRequired && !supabaseJwtSecret && (!supabaseUrl || !supabaseServiceRoleKey)) {
-    throw new Error('SUPABASE_JWT_SECRET or SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY is required when relayer authentication is enabled');
+  if (assetIssuer !== expectedUsdcIssuer) {
+    throw new Error(`USDC_ASSET_ISSUER must be Circle's canonical ${networkName} issuer`);
+  }
+
+  if (authRequired && (!supabaseUrl || !supabaseServiceRoleKey)) {
+    throw new Error('SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required when relayer authentication is enabled');
   }
 
   return {
@@ -493,13 +667,18 @@ function loadConfig() {
     transactionTimeoutSeconds: Number(process.env.TRANSACTION_TIMEOUT_SECONDS || 60),
     startingBalance: process.env.STARTING_BALANCE || '1.5',
     trustlineLimit: process.env.TRUSTLINE_LIMIT || '1000000000',
+    maxSponsoredAccountsPerUser: Number(process.env.MAX_SPONSORED_ACCOUNTS_PER_USER || 5),
     addMoneyAmount: process.env.ADD_MONEY_AMOUNT || '100',
     maxAddMoneyAmount: Number(process.env.MAX_ADD_MONEY_AMOUNT || 1000),
-    maxPaymentAmount: Number(process.env.MAX_PAYMENT_AMOUNT || 100000),
+    maxAddMoneyDailyCap: Number(process.env.MAX_ADD_MONEY_DAILY_CAP || process.env.ADD_MONEY_DAILY_CAP || 1000),
+    maxPaymentAmount: Number(process.env.MAX_PAYMENT_AMOUNT || 1000),
+    maxPaymentDailyAmount: Number(process.env.MAX_PAYMENT_DAILY_AMOUNT || 5000),
+    maxPaymentDailyCount: Number(process.env.MAX_PAYMENT_DAILY_COUNT || 20),
+    maxPaymentVelocityPerMinute: Number(process.env.MAX_PAYMENT_VELOCITY_PER_MINUTE || 10),
     addMoneyCooldownMs: Number(process.env.ADD_MONEY_COOLDOWN_MS || 24 * 60 * 60 * 1000),
     idempotencyTtlMs: Number(process.env.IDEMPOTENCY_TTL_MS || 10 * 60 * 1000),
     lowXlmThreshold: Number(process.env.LOW_XLM_THRESHOLD || 5),
-    lowAssetThreshold: Number(process.env.LOW_CPINR_THRESHOLD || 1000),
+    lowAssetThreshold: Number(process.env.LOW_USDC_THRESHOLD || 100),
     authRequired,
     supabaseJwtSecret,
     supabaseUrl,
@@ -607,12 +786,13 @@ async function requireAuthenticatedUser(req, res, next) {
 
 /**
  * Resolve the wallet address(es) that belong to an authenticated Supabase user.
- * Returns an array of wallet_address strings from the users table.
- * Returns null when persistence is not configured (ownership check is skipped).
+ * Configuration absence, lookup failure, and a successful empty result are
+ * deliberately distinct so callers cannot turn infrastructure failures into
+ * authorization bypasses.
  */
 async function resolveUserWallets(authUid) {
   if (!isSupabasePersistenceEnabled()) {
-    return null;
+    return { configured: false };
   }
 
   try {
@@ -626,12 +806,101 @@ async function resolveUserWallets(authUid) {
       headers: { Accept: 'application/json' },
     });
     if (!Array.isArray(rows)) {
-      return null;
+      throw new Error('Wallet ownership lookup returned an invalid response');
     }
-    return rows.map(r => r.wallet_address).filter(Boolean);
+    return {
+      configured: true,
+      ok: true,
+      wallets: rows.map(r => r.wallet_address).filter(Boolean),
+    };
   } catch (error) {
     console.warn('Wallet ownership lookup failed:', error.message);
-    return null;
+    return { configured: true, ok: false, error };
+  }
+}
+
+/**
+ * Resolve the auth user ID that owns a given wallet address.
+ * A successful unbound lookup is represented by owner: null.
+ */
+async function resolveWalletOwner(walletAddress) {
+  if (!isSupabasePersistenceEnabled()) {
+    return { configured: false };
+  }
+
+  try {
+    const query = new URLSearchParams({
+      select: 'auth_user_id',
+      wallet_address: `eq.${walletAddress}`,
+      is_active: 'eq.true',
+      limit: '1',
+    });
+    const rows = await supabaseRestRequest(`wallet_bindings?${query.toString()}`, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+    });
+    if (!Array.isArray(rows)) {
+      throw new Error('Wallet owner lookup returned an invalid response');
+    }
+    return {
+      configured: true,
+      ok: true,
+      owner: rows.length > 0 && rows[0]?.auth_user_id ? rows[0].auth_user_id : null,
+    };
+  } catch (error) {
+    console.warn('Wallet owner lookup failed:', error.message);
+    return { configured: true, ok: false, error };
+  }
+}
+
+function sendWalletOwnershipUnavailable(res, error, code = 'WALLET_OWNERSHIP_UNAVAILABLE') {
+  if (error) {
+    console.warn('Wallet ownership service unavailable:', error.message);
+  }
+  return res.status(503).json({
+    error: 'Wallet ownership service is temporarily unavailable',
+    code,
+    retryable: true,
+  });
+}
+
+/**
+ * Bind a wallet address to an auth user in the database.
+ */
+async function bindWalletToUser(authUserId, walletAddress) {
+  if (!isSupabasePersistenceEnabled()) {
+    if (config.authRequired) {
+      throw new Error('Wallet persistence is required when authentication is enabled');
+    }
+    return;
+  }
+
+  await supabaseRestRequest('wallet_bindings', {
+    method: 'POST',
+    headers: { Prefer: 'resolution=merge-duplicates,return=minimal' },
+    body: JSON.stringify({
+      auth_user_id: authUserId,
+      wallet_address: walletAddress,
+      is_active: true,
+    }),
+  });
+}
+
+/**
+ * Check sponsor account XLM balance and trigger alarm if below threshold.
+ */
+async function checkSponsorBalanceAlarm() {
+  try {
+    const balances = await getBalances(sponsorKeypair.publicKey());
+    const sponsorXlm = Number(balances.xlm || '0');
+    if (sponsorXlm < config.lowXlmThreshold) {
+      console.warn(`[SPONSOR_DRAIN_ALARM] Sponsor account XLM balance is low: ${sponsorXlm} XLM (threshold: ${config.lowXlmThreshold})`);
+      if (typeof sendLowBalanceAlert === 'function') {
+        sendLowBalanceAlert({ sponsorXlm, distributionAsset: null, lowXlm: true, lowAsset: false }).catch(() => {});
+      }
+    }
+  } catch (err) {
+    console.warn('Failed to check sponsor balance alarm:', err.message);
   }
 }
 
@@ -639,8 +908,8 @@ async function resolveUserWallets(authUid) {
  * Build a middleware that verifies the requesting user owns the wallet
  * identified by `walletField` in req.body.
  *
- * When auth is disabled or Supabase persistence is not configured the check
- * is skipped so local development continues to work without a Supabase project.
+ * Only explicit auth-disabled development may skip this check. Authenticated
+ * deployments reject requests when persistence is unavailable or errors.
  *
  * @param {string} walletField - The req.body key that holds the wallet address.
  */
@@ -658,14 +927,13 @@ function requireWalletOwnership(walletField) {
       });
     }
 
-    const ownedWallets = await resolveUserWallets(authUid);
-
-    // When Supabase persistence is not configured, skip the ownership check.
-    if (ownedWallets === null) {
-      return next();
+    const ownershipResult = await resolveUserWallets(authUid);
+    if (!ownershipResult.configured || !ownershipResult.ok) {
+      return sendWalletOwnershipUnavailable(res, ownershipResult.error);
     }
+    const ownedWallets = ownershipResult.wallets;
 
-    if (!ownedWallets || ownedWallets.length === 0) {
+    if (ownedWallets.length === 0) {
       // If we are preparing an account, it might not be bound yet.
       // But we already added the binding to /accounts/prepare.
       return res.status(403).json({
@@ -703,8 +971,11 @@ function requirePathWalletOwnership() {
     if (!authUid) {
       return res.status(401).json({ error: 'Authentication required', code: 'AUTH_REQUIRED' });
     }
-    const ownedWallets = await resolveUserWallets(authUid);
-    if (ownedWallets === null) return next();
+    const ownershipResult = await resolveUserWallets(authUid);
+    if (!ownershipResult.configured || !ownershipResult.ok) {
+      return sendWalletOwnershipUnavailable(res, ownershipResult.error);
+    }
+    const ownedWallets = ownershipResult.wallets;
     const requestedWallet = req.params.accountId;
     if (!ownedWallets.includes(requestedWallet)) {
       return res.status(403).json({
@@ -882,6 +1153,9 @@ function normalizeAmount(value, maxAmount) {
   if (!Number.isFinite(numeric) || numeric <= 0 || numeric > maxAmount) {
     const error = new Error(`Amount must be greater than 0 and no more than ${maxAmount}`);
     error.statusCode = 400;
+    if (numeric > maxAmount) {
+      error.code = 'PAYMENT_AMOUNT_EXCEEDED';
+    }
     throw error;
   }
 
@@ -932,29 +1206,83 @@ async function getAccountStatus(accountId) {
   }
 }
 
-async function getAddMoneyRetryAfterSeconds(accountId) {
-  const persistedRetryAfter = await getPersistedAddMoneyRetryAfterSeconds(accountId);
-  return persistedRetryAfter;
-}
-
-async function getPersistedAddMoneyRetryAfterSeconds(accountId) {
+async function acquireAddMoneyUserLock(userLockKey, ttlMs) {
   if (!isSupabasePersistenceEnabled()) {
-    return 0;
+    throw createAddMoneyPersistenceError(
+      new Error('Supabase persistence is not configured'),
+      'lock acquisition'
+    );
   }
 
   try {
+    await supabaseRestRequest('relayer_idempotency_keys', {
+      method: 'POST',
+      headers: { Prefer: 'return=minimal' },
+      body: JSON.stringify({
+        key: userLockKey,
+        response: null,
+        expires_at: new Date(Date.now() + ttlMs).toISOString(),
+      }),
+    });
+    return { acquired: true };
+  } catch (error) {
+    if (isPostgresUniqueViolation(error)) {
+      return { acquired: false };
+    }
+    throw createAddMoneyPersistenceError(error, 'lock acquisition');
+  }
+}
+
+async function releaseAddMoneyUserLock(userLockKey) {
+  if (isSupabasePersistenceEnabled()) {
+    try {
+      const query = new URLSearchParams({ key: `eq.${userLockKey}` });
+      await supabaseRestRequest(`relayer_idempotency_keys?${query.toString()}`, {
+        method: 'DELETE',
+        headers: { Prefer: 'return=minimal' },
+      });
+    } catch {
+      // Best-effort cleanup
+    }
+  }
+}
+
+async function getAddMoneyRetryAfterSeconds(accountId, authUserId) {
+  const persistedRetryAfter = await getPersistedAddMoneyRetryAfterSeconds(accountId, authUserId);
+  return persistedRetryAfter;
+}
+
+async function getPersistedAddMoneyRetryAfterSeconds(accountId, authUserId) {
+  if (!isSupabasePersistenceEnabled()) {
+    throw createAddMoneyPersistenceError(
+      new Error('Supabase persistence is not configured'),
+      'cooldown lookup'
+    );
+  }
+
+  try {
+    let filter;
+    if (authUserId) {
+      filter = `or=(auth_user_id.eq.${encodeURIComponent(authUserId)},wallet_address.eq.${encodeURIComponent(accountId)})`;
+    } else {
+      filter = `wallet_address=eq.${encodeURIComponent(accountId)}`;
+    }
+
     const query = new URLSearchParams({
       select: 'next_available_at',
-      wallet_address: `eq.${accountId}`,
       next_available_at: `gt.${new Date().toISOString()}`,
       order: 'next_available_at.desc',
       limit: '1',
     });
-    const rows = await supabaseRestRequest(`add_money_claims?${query.toString()}`, {
+
+    const rows = await supabaseRestRequest(`add_money_claims?${filter}&${query.toString()}`, {
       method: 'GET',
       headers: { Accept: 'application/json' },
     });
-    const nextAvailableAt = Array.isArray(rows) ? rows[0]?.next_available_at : null;
+    if (!Array.isArray(rows)) {
+      throw new Error('Cooldown lookup returned an invalid response');
+    }
+    const nextAvailableAt = rows[0]?.next_available_at;
     if (!nextAvailableAt) {
       return 0;
     }
@@ -962,44 +1290,142 @@ async function getPersistedAddMoneyRetryAfterSeconds(accountId) {
     const remainingMs = new Date(nextAvailableAt).getTime() - Date.now();
     return remainingMs > 0 ? Math.ceil(remainingMs / 1000) : 0;
   } catch (error) {
-    console.warn('Add Money claim cooldown lookup skipped:', error.message);
-    return 0;
+    throw createAddMoneyPersistenceError(error, 'cooldown lookup');
   }
 }
 
-async function recordAddMoneyClaim({
+async function checkAddMoneyDailyCap(accountId, authUserId, requestedAmount) {
+  if (!isSupabasePersistenceEnabled()) {
+    throw createAddMoneyPersistenceError(
+      new Error('Supabase persistence is not configured'),
+      'daily cap lookup'
+    );
+  }
+  if (!config.maxAddMoneyDailyCap) {
+    return { allowed: true, totalClaimed: 0, retryAfterSeconds: 0 };
+  }
+
+  try {
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    let filter;
+    if (authUserId) {
+      filter = `or=(auth_user_id.eq.${encodeURIComponent(authUserId)},wallet_address.eq.${encodeURIComponent(accountId)})`;
+    } else {
+      filter = `wallet_address=eq.${encodeURIComponent(accountId)}`;
+    }
+
+    const query = new URLSearchParams({
+      select: 'amount,claimed_at',
+      claimed_at: `gte.${oneDayAgo}`,
+      order: 'claimed_at.asc',
+    });
+
+    const rows = await supabaseRestRequest(`add_money_claims?${filter}&${query.toString()}`, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+    });
+
+    if (!Array.isArray(rows)) {
+      throw new Error('Daily cap lookup returned an invalid response');
+    }
+    if (rows.length === 0) {
+      return { allowed: true, totalClaimed: 0, retryAfterSeconds: 0 };
+    }
+
+    const totalClaimed = rows.reduce((sum, row) => sum + Number(row.amount || 0), 0);
+    const numRequested = Number(requestedAmount || 0);
+
+    if (totalClaimed + numRequested > config.maxAddMoneyDailyCap) {
+      const oldestClaimTime = new Date(rows[0].claimed_at).getTime();
+      const resetTime = oldestClaimTime + 24 * 60 * 60 * 1000;
+      const remainingMs = resetTime - Date.now();
+      const retryAfterSeconds = remainingMs > 0 ? Math.ceil(remainingMs / 1000) : 3600;
+
+      return {
+        allowed: false,
+        totalClaimed,
+        retryAfterSeconds,
+      };
+    }
+
+    return { allowed: true, totalClaimed, retryAfterSeconds: 0 };
+  } catch (error) {
+    throw createAddMoneyPersistenceError(error, 'daily cap lookup');
+  }
+}
+
+async function reserveAddMoneyClaim({
+  claimId,
   walletAddress,
+  authUserId,
   amount,
-  txHash,
   idempotencyKey,
   nextAvailableAt,
 }) {
   if (!isSupabasePersistenceEnabled()) {
-    return;
+    throw createAddMoneyPersistenceError(
+      new Error('Supabase persistence is not configured'),
+      'claim reservation'
+    );
   }
 
   try {
-    const conflictColumn = idempotencyKey ? 'idempotency_key' : 'tx_hash';
     const row = {
+      id: claimId,
       wallet_address: walletAddress,
+      auth_user_id: authUserId || null,
       amount,
       asset_code: config.assetCode,
       asset_issuer: config.assetIssuer,
-      tx_hash: txHash,
+      tx_hash: null,
       idempotency_key: idempotencyKey || null,
+      claimed_at: new Date().toISOString(),
       next_available_at: nextAvailableAt,
     };
 
-    await supabaseRestRequest(`add_money_claims?on_conflict=${conflictColumn}`, {
+    const rows = await supabaseRestRequest('add_money_claims', {
       method: 'POST',
-      headers: {
-        Prefer: 'resolution=merge-duplicates,return=minimal',
-      },
+      headers: { Prefer: 'return=representation' },
       body: JSON.stringify(row),
     });
+    if (!Array.isArray(rows) || rows.length !== 1 || rows[0]?.id !== claimId) {
+      throw new Error('Claim reservation returned an invalid response');
+    }
   } catch (error) {
-    console.warn('Add Money claim persistence skipped:', error.message);
+    throw createAddMoneyPersistenceError(error, 'claim reservation');
   }
+}
+
+async function settleAddMoneyClaim(claimId, txHash) {
+  try {
+    const query = new URLSearchParams({ id: `eq.${claimId}` });
+    const rows = await supabaseRestRequest(`add_money_claims?${query.toString()}`, {
+      method: 'PATCH',
+      headers: { Prefer: 'return=representation' },
+      body: JSON.stringify({ tx_hash: txHash }),
+    });
+    if (!Array.isArray(rows) || rows.length !== 1 || rows[0]?.id !== claimId) {
+      throw new Error('Claim settlement did not update the reserved claim');
+    }
+  } catch (error) {
+    throw createAddMoneyPersistenceError(error, 'claim settlement');
+  }
+}
+
+function createAddMoneyPersistenceError(cause, operation) {
+  if (cause?.code === 'ADD_MONEY_PERSISTENCE_UNAVAILABLE') {
+    return cause;
+  }
+  const error = new Error(`Add Money ${operation} is temporarily unavailable`);
+  error.statusCode = 503;
+  error.code = 'ADD_MONEY_PERSISTENCE_UNAVAILABLE';
+  error.retryable = true;
+  error.cause = cause;
+  return error;
+}
+
+function isPostgresUniqueViolation(error) {
+  return error?.code === '23505' || error?.body?.code === '23505';
 }
 
 function isSupabasePersistenceEnabled() {
@@ -1024,7 +1450,7 @@ async function acquireIdempotencyLock(key, ttlMs) {
     });
     return { acquired: true };
   } catch (error) {
-    if (error.response && error.response.status === 409) {
+    if (isPostgresUniqueViolation(error)) {
       const query = new URLSearchParams({ select: 'response', key: `eq.${key}`, limit: '1' });
       const rows = await supabaseRestRequest(`relayer_idempotency_keys?${query.toString()}`, {
         method: 'GET',
@@ -1054,6 +1480,164 @@ async function setIdempotencyResponse(key, response, ttlMs) {
   }
 }
 
+const inMemoryPaymentRecords = [];
+
+async function getPaymentRecords(accountId, authUserId, sinceIso) {
+  if (!isSupabasePersistenceEnabled()) {
+    return inMemoryPaymentRecords.filter(r => {
+      const matchUser = (authUserId && r.auth_user_id === authUserId) || (accountId && r.wallet_address === accountId);
+      const matchTime = !sinceIso || new Date(r.created_at) >= new Date(sinceIso);
+      return matchUser && matchTime;
+    });
+  }
+
+  let filter;
+  if (authUserId) {
+    filter = accountId
+      ? `or=(auth_user_id.eq.${encodeURIComponent(authUserId)},wallet_address.eq.${encodeURIComponent(accountId)})`
+      : `auth_user_id=eq.${encodeURIComponent(authUserId)}`;
+  } else {
+    filter = `wallet_address=eq.${encodeURIComponent(accountId)}`;
+  }
+
+  const query = new URLSearchParams({
+    select: 'amount,created_at',
+    order: 'created_at.asc',
+  });
+  if (sinceIso) {
+    query.set('created_at', `gte.${sinceIso}`);
+  }
+
+  const rows = await supabaseRestRequest(`payment_records?${filter}&${query.toString()}`, {
+    method: 'GET',
+    headers: { Accept: 'application/json' },
+  });
+
+  if (!Array.isArray(rows)) {
+    throw new Error('Payment limits lookup returned an invalid response');
+  }
+
+  return rows;
+}
+
+async function recordPaymentRecord({ id, authUserId, walletAddress, amount, txHash }) {
+  const row = {
+    id: id || crypto.randomUUID(),
+    auth_user_id: authUserId || null,
+    wallet_address: walletAddress,
+    amount,
+    tx_hash: txHash || null,
+    created_at: new Date().toISOString(),
+  };
+
+  inMemoryPaymentRecords.push(row);
+
+  if (!isSupabasePersistenceEnabled()) {
+    return row;
+  }
+
+  try {
+    const rows = await supabaseRestRequest('payment_records', {
+      method: 'POST',
+      headers: { Prefer: 'return=representation' },
+      body: JSON.stringify(row),
+    });
+    return (Array.isArray(rows) && rows[0]) || row;
+  } catch (error) {
+    console.error('Failed to persist payment limits record:', error.message);
+    throw error;
+  }
+}
+
+async function checkPaymentLimits(walletAddress, authUserId, amountStr) {
+  const amountNum = Number(amountStr);
+
+  if (amountNum > config.maxPaymentAmount) {
+    const error = new Error(`Payment amount exceeds the maximum per-transaction limit of ${config.maxPaymentAmount} ${config.assetCode}`);
+    error.statusCode = 400;
+    error.code = 'PAYMENT_AMOUNT_EXCEEDED';
+    throw error;
+  }
+
+  const now = Date.now();
+  const oneDayAgo = new Date(now - 24 * 60 * 60 * 1000).toISOString();
+
+  let records;
+  try {
+    records = await getPaymentRecords(walletAddress, authUserId, oneDayAgo);
+  } catch (err) {
+    const error = new Error('Payment limits service is temporarily unavailable');
+    error.statusCode = 503;
+    error.code = 'PAYMENT_LIMITS_UNAVAILABLE';
+    error.retryable = true;
+    throw error;
+  }
+
+  // Velocity limit: payments within the last 60 seconds
+  const recentRecords = records.filter(r => new Date(r.created_at).getTime() >= (now - 60 * 1000));
+  if (recentRecords.length >= config.maxPaymentVelocityPerMinute) {
+    const oldestRecent = Math.min(...recentRecords.map(r => new Date(r.created_at).getTime()));
+    const retryAfterSeconds = Math.max(1, Math.ceil((oldestRecent + 60 * 1000 - now) / 1000));
+    const error = new Error(`Payment velocity limit reached (${config.maxPaymentVelocityPerMinute} per minute). Please wait ${retryAfterSeconds} seconds.`);
+    error.statusCode = 429;
+    error.code = 'PAYMENT_VELOCITY_EXCEEDED';
+    error.retryAfterSeconds = retryAfterSeconds;
+    throw error;
+  }
+
+  // Daily transaction count limit
+  if (records.length >= config.maxPaymentDailyCount) {
+    const oldestInDay = new Date(records[0].created_at).getTime();
+    const retryAfterSeconds = Math.max(1, Math.ceil((oldestInDay + 24 * 60 * 60 * 1000 - now) / 1000));
+    const error = new Error(`Daily payment transaction limit reached (${config.maxPaymentDailyCount} transactions per day). Please try again later.`);
+    error.statusCode = 429;
+    error.code = 'PAYMENT_DAILY_COUNT_EXCEEDED';
+    error.retryAfterSeconds = retryAfterSeconds;
+    throw error;
+  }
+
+  // Daily amount limit
+  const totalAmountToday = records.reduce((sum, r) => sum + Number(r.amount || 0), 0);
+  if (totalAmountToday + amountNum > config.maxPaymentDailyAmount) {
+    const oldestInDay = new Date(records[0].created_at).getTime();
+    const retryAfterSeconds = Math.max(1, Math.ceil((oldestInDay + 24 * 60 * 60 * 1000 - now) / 1000));
+    const error = new Error(`Daily payment amount limit reached. Maximum ${config.maxPaymentDailyAmount} ${config.assetCode} per day.`);
+    error.statusCode = 429;
+    error.code = 'PAYMENT_DAILY_CAP_EXCEEDED';
+    error.retryAfterSeconds = retryAfterSeconds;
+    error.details = {
+      dailyCap: config.maxPaymentDailyAmount,
+      totalToday: totalAmountToday,
+      requested: amountNum,
+    };
+    throw error;
+  }
+
+  return { allowed: true };
+}
+
+async function getPaymentLimitsStatus(authUserId, walletAddress) {
+  const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const records = await getPaymentRecords(walletAddress, authUserId, oneDayAgo);
+
+  const transactionsToday = records.length;
+  const amountToday = records.reduce((sum, r) => sum + Number(r.amount || 0), 0);
+
+  return {
+    maxAmountPerTransaction: config.maxPaymentAmount,
+    maxDailyAmount: config.maxPaymentDailyAmount,
+    maxTransactionsPerDay: config.maxPaymentDailyCount,
+    maxDailyCount: config.maxPaymentDailyCount,
+    maxRequestsPerMinute: config.maxPaymentVelocityPerMinute,
+    amountToday,
+    transactionsToday,
+    remaining: {
+      amount: Math.max(0, config.maxPaymentDailyAmount - amountToday),
+      transactions: Math.max(0, config.maxPaymentDailyCount - transactionsToday),
+    },
+  };
+}
+
 // ── Startup cleanup of expired persisted state ──────────────────────────────
 
 async function cleanExpiredPersistedState() {
@@ -1064,9 +1648,28 @@ async function cleanExpiredPersistedState() {
       method: 'DELETE',
       headers: { Prefer: 'return=minimal' },
     });
+    const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+    await supabaseRestRequest(`payment_records?created_at=lte.${encodeURIComponent(sevenDaysAgo)}`, {
+      method: 'DELETE',
+      headers: { Prefer: 'return=minimal' },
+    }).catch(() => {});
     console.log('Expired persisted state cleaned up on startup');
   } catch (error) {
     console.error('Failed to clean expired persisted state:', error.message);
+  }
+}
+
+async function assertWalletBindingsReachable() {
+  if (!isSupabasePersistenceEnabled()) {
+    throw new Error('wallet_bindings requires configured Supabase persistence');
+  }
+
+  const rows = await supabaseRestRequest('wallet_bindings?select=id&limit=1', {
+    method: 'GET',
+    headers: { Accept: 'application/json' },
+  });
+  if (!Array.isArray(rows)) {
+    throw new Error('wallet_bindings startup probe returned an invalid response');
   }
 }
 
@@ -1086,12 +1689,31 @@ async function supabaseRestRequest(path, options = {}) {
     },
   });
   const text = await response.text();
-
-  if (!response.ok) {
-    throw new Error(text || `Supabase request failed with status ${response.status}`);
+  let body = null;
+  if (text) {
+    try {
+      body = JSON.parse(text);
+    } catch {
+      body = null;
+    }
   }
 
-  return text ? JSON.parse(text) : null;
+  if (!response.ok) {
+    const error = new Error(body?.message || text || `Supabase request failed with status ${response.status}`);
+    error.status = response.status;
+    error.body = body;
+    error.code = body?.code;
+    error.response = { status: response.status, data: body };
+    throw error;
+  }
+
+  if (!text) {
+    return null;
+  }
+  if (body === null) {
+    throw new Error('Supabase returned a non-JSON response');
+  }
+  return body;
 }
 
 function delay(ms) {
@@ -1102,7 +1724,7 @@ function getStellarErrorMessage(resultCodes) {
   const operations = resultCodes?.operations || [];
 
   if (operations.includes('op_no_issuer')) {
-    return `The configured ${config.assetCode} issuer account does not exist on ${config.networkName}. Run the testnet asset setup before using Add Money.`;
+    return `Circle's ${config.assetCode} issuer is unavailable on ${config.networkName}. Verify the network and issuer configuration.`;
   }
 
   if (operations.includes('op_no_trust')) {
@@ -1181,7 +1803,7 @@ async function sendLowBalanceAlert({ sponsorXlm, distributionAsset, lowXlm, lowA
 
   const warnings = [
     lowXlm ? `Sponsor XLM balance is ${sponsorXlm}` : null,
-    lowAsset ? `Distribution CPINR balance is ${distributionAsset}` : null,
+    lowAsset ? `Distribution USDC balance is ${distributionAsset}` : null,
   ].filter(Boolean);
 
   await fetch(process.env.ALERT_WEBHOOK_URL, {

@@ -4,8 +4,8 @@
  * These tests verify that when auth is enabled the relayer:
  *   - Allows requests whose wallet belongs to the authenticated user.
  *   - Returns 403 WALLET_OWNERSHIP_DENIED when the wallet belongs to another user.
- *   - Returns 403 MERCHANT_OWNERSHIP_DENIED when the merchant wallet belongs to another user.
- *   - Skips ownership checks when Supabase persistence is not configured (no service-role key).
+ *   - Returns 503 when an ownership lookup or binding write fails.
+ *   - Refuses to boot when wallet_bindings is unavailable.
  *   - Skips ownership checks when auth is disabled (RELAYER_AUTH_REQUIRED=false).
  *
  * External network calls (Stellar Horizon, Supabase) are fully mocked so no real
@@ -59,11 +59,24 @@ const USER_B = 'user-b-uid';
  *
  * Route table (called in order):
  *   /auth/v1/user      → verifySupabaseTokenWithAuthApi (sub from token header)
- *   /rest/v1/users?... → resolveUserWallets
+ *   /rest/v1/wallet_bindings?... → startup probe and ownership resolution
  */
 function buildFetchMock({
-  userWallets = {},         // { [authUid]: string[] }
+  userWallets = {},
+  walletOwners = {},
+  failOwnershipLookup = false,
+  failBindingWrite = false,
+  walletBindingsUnavailable = false,
+  failCooldownLookup = false,
+  failDailyCapLookup = false,
+  failClaimWrite = false,
+  failLockWrite = false,
+  failPaymentRecordsLookup = false,
+  failPaymentRecordsWrite = false,
+  database,
+  events = [],
 } = {}) {
+  const persistence = database || { locks: new Map(), claims: [], paymentRecords: [] };
   return async function mockFetch(url, options) {
     const urlStr = String(url);
 
@@ -86,10 +99,160 @@ function buildFetchMock({
     // ── wallet_bindings table ─────────────────────────────────────────────────
     if (urlStr.includes('/rest/v1/wallet_bindings')) {
       const parsed = new URL(urlStr);
+      const method = (options && options.method) || 'GET';
       const authUserIdFilter = parsed.searchParams.get('auth_user_id') || '';
+      const walletAddressFilter = parsed.searchParams.get('wallet_address') || '';
+      const isStartupProbe = parsed.searchParams.get('select') === 'id'
+        && parsed.searchParams.get('limit') === '1'
+        && !authUserIdFilter
+        && !walletAddressFilter;
+
+      if (walletBindingsUnavailable) {
+        return makeResponse(false, 404, { code: '42P01', message: 'relation "wallet_bindings" does not exist' });
+      }
+      if (isStartupProbe) {
+        return makeResponse(true, 200, []);
+      }
+      if (method === 'POST') {
+        if (failBindingWrite) {
+          return makeResponse(false, 503, { code: 'PGRST000', message: 'database unavailable' });
+        }
+        return makeResponse(true, 201, null);
+      }
+      if (failOwnershipLookup) {
+        return makeResponse(false, 503, { code: 'PGRST000', message: 'database unavailable' });
+      }
+      if (walletAddressFilter) {
+        const wallet = walletAddressFilter.replace(/^eq\./, '');
+        const owner = walletOwners[wallet];
+        return makeResponse(true, 200, owner ? [{ auth_user_id: owner }] : []);
+      }
+
       const uid = authUserIdFilter.replace(/^eq\./, '');
       const wallets = (userWallets[uid] || []).map(w => ({ wallet_address: w }));
       return makeResponse(true, 200, wallets);
+    }
+
+    // ── persisted relayer locks ────────────────────────────────────────────────
+    if (urlStr.includes('/rest/v1/relayer_idempotency_keys')) {
+      const parsed = new URL(urlStr);
+      const method = (options && options.method) || 'GET';
+      const keyFilter = parsed.searchParams.get('key') || '';
+      const key = keyFilter.replace(/^eq\./, '');
+
+      if (method === 'POST') {
+        if (failLockWrite) {
+          return makeResponse(false, 503, { code: 'PGRST000', message: 'database unavailable' });
+        }
+        const row = JSON.parse(options.body);
+        events.push(`lock:${row.key}`);
+        if (persistence.locks.has(row.key)) {
+          return makeResponse(false, 409, {
+            code: '23505',
+            message: 'duplicate key value violates unique constraint',
+          });
+        }
+        persistence.locks.set(row.key, row);
+        return makeResponse(true, 201, null);
+      }
+
+      if (method === 'GET') {
+        const row = persistence.locks.get(key);
+        return makeResponse(true, 200, row ? [{ response: row.response }] : []);
+      }
+
+      if (method === 'PATCH') {
+        const row = persistence.locks.get(key);
+        if (row) {
+          Object.assign(row, JSON.parse(options.body));
+        }
+        return makeResponse(true, 204, null);
+      }
+
+      if (method === 'DELETE') {
+        if (key) {
+          persistence.locks.delete(key);
+        }
+        return makeResponse(true, 204, null);
+      }
+    }
+
+    // ── Add Money claims ───────────────────────────────────────────────────────
+    if (urlStr.includes('/rest/v1/add_money_claims')) {
+      const parsed = new URL(urlStr);
+      const method = (options && options.method) || 'GET';
+      const select = parsed.searchParams.get('select') || '';
+
+      if (method === 'GET' && select === 'next_available_at') {
+        if (failCooldownLookup) {
+          return makeResponse(false, 503, { code: 'PGRST000', message: 'database unavailable' });
+        }
+        return makeResponse(true, 200, []);
+      }
+
+      if (method === 'GET' && select === 'amount,claimed_at') {
+        if (failDailyCapLookup) {
+          return makeResponse(false, 503, { code: 'PGRST000', message: 'database unavailable' });
+        }
+        return makeResponse(true, 200, persistence.claims.map(row => ({
+          amount: row.amount,
+          claimed_at: row.claimed_at,
+        })));
+      }
+
+      if (method === 'POST') {
+        events.push('claim:reserve');
+        if (failClaimWrite) {
+          return makeResponse(false, 503, { code: 'PGRST000', message: 'database unavailable' });
+        }
+        const row = JSON.parse(options.body);
+        persistence.claims.push(row);
+        return makeResponse(true, 201, [row]);
+      }
+
+      if (method === 'PATCH') {
+        const id = (parsed.searchParams.get('id') || '').replace(/^eq\./, '');
+        const row = persistence.claims.find(claim => claim.id === id);
+        if (row) {
+          Object.assign(row, JSON.parse(options.body));
+          events.push('claim:settle');
+        }
+        return makeResponse(true, 200, row ? [row] : []);
+      }
+    }
+
+    // ── Payment records ────────────────────────────────────────────────────────
+    if (urlStr.includes('/rest/v1/payment_records')) {
+      const parsed = new URL(urlStr);
+      const method = (options && options.method) || 'GET';
+
+      if (failPaymentRecordsLookup) {
+        return makeResponse(false, 503, { code: 'PGRST000', message: 'database unavailable' });
+      }
+
+      if (method === 'GET') {
+        const records = (persistence.paymentRecords || []).map(r => ({
+          amount: r.amount,
+          created_at: r.created_at,
+          wallet_address: r.wallet_address,
+          auth_user_id: r.auth_user_id,
+        }));
+        return makeResponse(true, 200, records);
+      }
+
+      if (method === 'POST') {
+        if (failPaymentRecordsWrite) {
+          return makeResponse(false, 503, { code: 'PGRST000', message: 'database unavailable' });
+        }
+        const row = JSON.parse(options.body);
+        if (!persistence.paymentRecords) persistence.paymentRecords = [];
+        persistence.paymentRecords.push(row);
+        return makeResponse(true, 201, [row]);
+      }
+
+      if (method === 'DELETE') {
+        return makeResponse(true, 204, null);
+      }
     }
 
     // Fallback – should not be reached in these tests.
@@ -100,22 +263,32 @@ function buildFetchMock({
 // ─── load server ─────────────────────────────────────────────────────────────
 
 let app;
-let activeModuleServer = null;
+const activeModuleServers = new Set();
+
+async function closeActiveModuleServers() {
+  const servers = Array.from(activeModuleServers);
+  activeModuleServers.clear();
+  await Promise.all(servers.map(serverInstance => new Promise((resolve) => {
+    if (typeof serverInstance.closeAllConnections === 'function') {
+      serverInstance.closeAllConnections();
+    }
+    serverInstance.close(resolve);
+  }).catch(() => {})));
+}
 
 /**
  * Reload the server module with specific environment variables.
  * Jest module isolation is used so each describe block can control env.
  */
 async function loadServer(env = {}) {
-  // Close the previous module-level server if any.
-  if (activeModuleServer) {
-    await new Promise((resolve) => {
-      if (typeof activeModuleServer.closeAllConnections === 'function') {
-        activeModuleServer.closeAllConnections();
-      }
-      activeModuleServer.close(resolve);
-    }).catch(() => {});
-    activeModuleServer = null;
+  const mod = await loadServerModule(env);
+  app = mod.app;
+  return app;
+}
+
+async function loadServerModule(env = {}, { closeExisting = true } = {}) {
+  if (closeExisting) {
+    await closeActiveModuleServers();
   }
 
   // Reset module registry to pick up new env values.
@@ -133,25 +306,27 @@ async function loadServer(env = {}) {
     STELLAR_NETWORK_PASSPHRASE: 'Test SDF Network ; September 2015',
     SPONSOR_SECRET: 'SCTIPFZ5KVBOENXTZK3FQPIGR5H73R5HE2MNZ4AXA7CA7JEEXUG5AF5G',
     DISTRIBUTION_SECRET: 'SBMJSD66AECV4CKZWTHXCH4EDZ5CRAZNNZL4OQP6IQAR4YLQ6HE5QJDM',
-    CPINR_ASSET_ISSUER: 'GA2SFZ4GJVMLPULSJMTY7RMIOPQD5W5JGTDSD3N7I2PR5KZRFGPQF5BJ',
+    USDC_ASSET_ISSUER: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
     SUPABASE_URL: 'http://localhost:9999/supabase',
     SUPABASE_SERVICE_ROLE_KEY: 'test-service-role-key',
     RELAYER_AUTH_REQUIRED: 'true',
-    ENABLE_ADD_MONEY: 'true',
+    ENABLE_TESTNET_FAUCET: 'true',
+    LEDGER_INGEST_ENABLED: 'false',
     PORT: '0',
   };
 
-  Object.assign(process.env, defaultEnv, env);
+  const { __fetchMock, ...envOverrides } = env;
+  Object.assign(process.env, defaultEnv, envOverrides);
 
   // Mount our fetch mock onto the global so the module picks it up.
-  const fetchImpl = env.__fetchMock || buildFetchMock();
+  const fetchImpl = __fetchMock || buildFetchMock();
   global.fetch = fetchImpl;
 
   const mod = require('./server.js');
-  app = mod.app;
-  activeModuleServer = mod.server;
+  await mod.startupPromise;
+  activeModuleServers.add(mod.server);
 
-  return app;
+  return mod;
 }
 
 // ─── request helper ──────────────────────────────────────────────────────────
@@ -193,28 +368,51 @@ function postJson(appInstance, path, body, headers = {}) {
   });
 }
 
+function getJson(appInstance, path, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const testServer = http.createServer(appInstance);
+    testServer.listen(0, '127.0.0.1', () => {
+      const port = testServer.address().port;
+      const req = http.request({
+        method: 'GET',
+        path,
+        host: '127.0.0.1',
+        port,
+        headers,
+      }, (res) => {
+        let data = '';
+        res.on('data', chunk => (data += chunk));
+        res.on('end', () => {
+          testServer.close();
+          try {
+            resolve({ status: res.statusCode, body: JSON.parse(data) });
+          } catch (_) {
+            resolve({ status: res.statusCode, body: data });
+          }
+        });
+      });
+      req.on('error', (error) => {
+        testServer.close();
+        reject(error);
+      });
+      req.end();
+    });
+  });
+}
+
 // ─── test suites ─────────────────────────────────────────────────────────────
 
 afterEach(async () => {
-  // Close the active module server to free the port.
-  if (activeModuleServer) {
-    await new Promise((resolve) => {
-      if (typeof activeModuleServer.closeAllConnections === 'function') {
-        activeModuleServer.closeAllConnections();
-      }
-      activeModuleServer.close(resolve);
-    }).catch(() => {});
-    activeModuleServer = null;
-  }
+  await closeActiveModuleServers();
 
   // Clean up env additions to avoid bleed between suites.
   const ADDED_KEYS = [
     'STELLAR_NETWORK', 'ALLOW_HTTP_HORIZON', 'ALLOW_CUSTOM_HORIZON',
     'STELLAR_HORIZON_URL', 'ALLOW_HTTP_SOROBAN_RPC', 'ALLOW_CUSTOM_SOROBAN_RPC',
     'SOROBAN_RPC_URL', 'STELLAR_NETWORK_PASSPHRASE', 'SPONSOR_SECRET',
-    'DISTRIBUTION_SECRET', 'CPINR_ASSET_ISSUER', 'SUPABASE_URL',
-    'SUPABASE_SERVICE_ROLE_KEY', 'RELAYER_AUTH_REQUIRED', 'ENABLE_ADD_MONEY',
-    'PORT',
+    'DISTRIBUTION_SECRET', 'CPINR_ASSET_ISSUER', 'USDC_ASSET_ISSUER',
+    'SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'SUPABASE_JWT_SECRET',
+    'RELAYER_AUTH_REQUIRED', 'ENABLE_TESTNET_FAUCET', 'LEDGER_INGEST_ENABLED', 'PORT',
   ];
   ADDED_KEYS.forEach(k => delete process.env[k]);
   jest.resetModules();
@@ -229,6 +427,10 @@ describe('/accounts/prepare ownership', () => {
     expressApp = await loadServer({
       __fetchMock: buildFetchMock({
         userWallets: { [USER_A]: [WALLET_A] },
+        walletOwners: {
+          [WALLET_A]: USER_A,
+          [WALLET_B]: USER_B,
+        },
       }),
     });
   });
@@ -257,6 +459,28 @@ describe('/accounts/prepare ownership', () => {
 
     expect(status).toBe(403);
     expect(body.code).toBe('WALLET_OWNERSHIP_DENIED');
+  });
+
+  it('aborts account sponsorship when a new wallet binding cannot be persisted', async () => {
+    expressApp = await loadServer({
+      __fetchMock: buildFetchMock({
+        userWallets: { [USER_A]: [WALLET_A] },
+        failBindingWrite: true,
+      }),
+    });
+
+    const { status, body } = await postJson(
+      expressApp,
+      '/accounts/prepare',
+      { accountId: WALLET_B },
+      { Authorization: makeBearerToken(USER_A) }
+    );
+
+    expect(status).toBe(503);
+    expect(body).toEqual(expect.objectContaining({
+      code: 'WALLET_BINDING_FAILED',
+      retryable: true,
+    }));
   });
 });
 
@@ -300,6 +524,164 @@ describe('/add-money ownership', () => {
   });
 });
 
+describe('/add-money persistence safety', () => {
+  it('returns 503 when the cooldown lookup fails', async () => {
+    const database = { locks: new Map(), claims: [] };
+    const expressApp = await loadServer({
+      __fetchMock: buildFetchMock({
+        userWallets: { [USER_A]: [WALLET_A] },
+        failCooldownLookup: true,
+        database,
+      }),
+    });
+
+    const { status, body } = await postJson(
+      expressApp,
+      '/add-money',
+      { accountId: WALLET_A },
+      { Authorization: makeBearerToken(USER_A) }
+    );
+
+    expect(status).toBe(503);
+    expect(body).toEqual(expect.objectContaining({
+      code: 'ADD_MONEY_PERSISTENCE_UNAVAILABLE',
+      retryable: true,
+    }));
+    expect(database.claims).toHaveLength(0);
+  });
+
+  it('returns 503 when the daily cap lookup fails', async () => {
+    const database = { locks: new Map(), claims: [] };
+    const expressApp = await loadServer({
+      __fetchMock: buildFetchMock({
+        userWallets: { [USER_A]: [WALLET_A] },
+        failDailyCapLookup: true,
+        database,
+      }),
+    });
+
+    const { status, body } = await postJson(
+      expressApp,
+      '/add-money',
+      { accountId: WALLET_A },
+      { Authorization: makeBearerToken(USER_A) }
+    );
+
+    expect(status).toBe(503);
+    expect(body.code).toBe('ADD_MONEY_PERSISTENCE_UNAVAILABLE');
+    expect(database.claims).toHaveLength(0);
+  });
+
+  it('preserves PostgREST status and parsed error code', async () => {
+    const mod = await loadServerModule({
+      __fetchMock: buildFetchMock({ failLockWrite: true }),
+    });
+
+    await expect(mod.testHooks.supabaseRestRequest('relayer_idempotency_keys', {
+      method: 'POST',
+      body: JSON.stringify({ key: 'test-lock', response: null }),
+    })).rejects.toMatchObject({
+      status: 503,
+      code: 'PGRST000',
+      body: { code: 'PGRST000' },
+    });
+  });
+
+  it('reserves the persisted cooldown before submitting a payment', () => {
+    const fs = require('fs');
+    const path = require('path');
+    const source = fs.readFileSync(path.join(__dirname, 'server.js'), 'utf8');
+    const routeStart = source.indexOf("app.post('/add-money'");
+    const routeEnd = source.indexOf("app.get('/tx/:hash'", routeStart);
+    const routeSource = source.slice(routeStart, routeEnd);
+
+    expect(routeSource.indexOf('await reserveAddMoneyClaim')).toBeGreaterThan(-1);
+    expect(routeSource.indexOf('await reserveAddMoneyClaim'))
+      .toBeLessThan(routeSource.indexOf('await server.submitTransaction'));
+  });
+
+  it('propagates a claim reservation write failure', async () => {
+    const database = { locks: new Map(), claims: [] };
+    const mod = await loadServerModule({
+      __fetchMock: buildFetchMock({ failClaimWrite: true, database }),
+    });
+
+    await expect(mod.testHooks.reserveAddMoneyClaim({
+      claimId: '00000000-0000-4000-8000-000000000001',
+      walletAddress: WALLET_A,
+      authUserId: USER_A,
+      amount: '100',
+      idempotencyKey: '',
+      nextAvailableAt: new Date(Date.now() + 60000).toISOString(),
+    })).rejects.toMatchObject({
+      statusCode: 503,
+      code: 'ADD_MONEY_PERSISTENCE_UNAVAILABLE',
+      retryable: true,
+    });
+    expect(database.claims).toHaveLength(0);
+  });
+
+  it('allows exactly one persisted lock across two relayer instances', async () => {
+    const database = { locks: new Map(), claims: [] };
+    const fetchMock = buildFetchMock({ database });
+    const first = await loadServerModule({ __fetchMock: fetchMock });
+    const second = await loadServerModule(
+      { __fetchMock: fetchMock },
+      { closeExisting: false }
+    );
+
+    const results = await Promise.all([
+      first.testHooks.acquireAddMoneyUserLock('add-money-user:shared', 60000),
+      second.testHooks.acquireAddMoneyUserLock('add-money-user:shared', 60000),
+    ]);
+
+    expect(results.map(result => result.acquired).sort()).toEqual([false, true]);
+    expect(database.locks.size).toBe(1);
+  });
+
+  it('recognizes an idempotency conflict by PostgreSQL code 23505', async () => {
+    const database = { locks: new Map(), claims: [] };
+    database.locks.set('duplicate-request', {
+      key: 'duplicate-request',
+      response: null,
+    });
+    const mod = await loadServerModule({
+      __fetchMock: buildFetchMock({ database }),
+    });
+
+    await expect(
+      mod.testHooks.acquireIdempotencyLock('duplicate-request', 60000)
+    ).resolves.toEqual({ acquired: false, response: null });
+  });
+
+  it('submits zero grants across two relayer instances when the DB lock fails', async () => {
+    const database = { locks: new Map(), claims: [] };
+    const fetchMock = buildFetchMock({
+      userWallets: { [USER_A]: [WALLET_A] },
+      failLockWrite: true,
+      database,
+    });
+    const first = await loadServerModule({ __fetchMock: fetchMock });
+    const second = await loadServerModule(
+      { __fetchMock: fetchMock },
+      { closeExisting: false }
+    );
+
+    const responses = await Promise.all([
+      postJson(first.app, '/add-money', { accountId: WALLET_A }, {
+        Authorization: makeBearerToken(USER_A),
+      }),
+      postJson(second.app, '/add-money', { accountId: WALLET_A }, {
+        Authorization: makeBearerToken(USER_A),
+      }),
+    ]);
+
+    expect(responses.map(response => response.status)).toEqual([503, 503]);
+    expect(responses.every(response => response.body.code === 'ADD_MONEY_PERSISTENCE_UNAVAILABLE')).toBe(true);
+    expect(database.claims).toHaveLength(0);
+  });
+});
+
 // ── auth disabled ─────────────────────────────────────────────────────────────
 
 describe('ownership checks skipped when auth is disabled', () => {
@@ -340,32 +722,59 @@ describe('ownership checks skipped when auth is disabled', () => {
   });
 });
 
-// ── persistence not configured ───────────────────────────────────────────────
+// ── fail-closed ownership infrastructure ─────────────────────────────────────
 
-describe('ownership checks skipped when Supabase persistence is not configured', () => {
-  let expressApp;
+describe('ownership infrastructure failures', () => {
+  it('rejects a request when the wallet binding lookup fails', async () => {
+    const expressApp = await loadServer({
+      __fetchMock: buildFetchMock({ failOwnershipLookup: true }),
+    });
 
-  beforeEach(async () => {
-    // Auth required but no service-role key → persistence off, ownership skipped.
-    expressApp = await loadServer({
+    const { status, body } = await postJson(
+      expressApp,
+      '/add-money',
+      { accountId: WALLET_A },
+      { Authorization: makeBearerToken(USER_A) }
+    );
+
+    expect(status).toBe(503);
+    expect(body).toEqual(expect.objectContaining({
+      code: 'WALLET_OWNERSHIP_UNAVAILABLE',
+      retryable: true,
+    }));
+  });
+
+  it('rejects a path-wallet request when the binding lookup fails', async () => {
+    const expressApp = await loadServer({
+      __fetchMock: buildFetchMock({ failOwnershipLookup: true }),
+    });
+
+    const { status, body } = await getJson(
+      expressApp,
+      `/account/${WALLET_A}/balance`,
+      { Authorization: makeBearerToken(USER_A) }
+    );
+
+    expect(status).toBe(503);
+    expect(body.code).toBe('WALLET_OWNERSHIP_UNAVAILABLE');
+  });
+
+  it('refuses to boot when wallet_bindings is unreachable', async () => {
+    await expect(loadServer({
+      __fetchMock: buildFetchMock({ walletBindingsUnavailable: true }),
+    })).rejects.toThrow(/wallet_bindings/);
+    expect(activeModuleServers.size).toBe(0);
+  });
+
+  it('refuses to boot without persistence when authentication is enabled', async () => {
+    await expect(loadServer({
       RELAYER_AUTH_REQUIRED: 'true',
       SUPABASE_URL: '',
       SUPABASE_SERVICE_ROLE_KEY: '',
       SUPABASE_JWT_SECRET: 'test-jwt-secret-that-is-long-enough',
       __fetchMock: buildFetchMock({}),
-    });
-  });
-
-  it('does not return 403 for /add-money when persistence is not configured', async () => {
-    const { status, body } = await postJson(
-      expressApp,
-      '/add-money',
-      { accountId: WALLET_B },
-      { Authorization: makeBearerToken(USER_A) }
-    );
-
-    expect(status).not.toBe(403);
-    expect(body.code).not.toBe('WALLET_OWNERSHIP_DENIED');
+    })).rejects.toThrow(/SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY/);
+    expect(activeModuleServers.size).toBe(0);
   });
 });
 
@@ -404,3 +813,185 @@ describe('unauthenticated requests are rejected before ownership check', () => {
     expect(body.code).toBe('AUTH_REQUIRED');
   });
 });
+
+// ── Payment transaction limits and velocity enforcement (#114) ───────────────
+
+describe('Payment transaction limits and velocity enforcement (#114)', () => {
+  let mod;
+  let expressApp;
+  let testHooks;
+  let persistence;
+
+  beforeEach(async () => {
+    persistence = { locks: new Map(), claims: [], paymentRecords: [] };
+    mod = await loadServerModule({
+      MAX_PAYMENT_AMOUNT: '1000',
+      MAX_PAYMENT_DAILY_AMOUNT: '5000',
+      MAX_PAYMENT_DAILY_COUNT: '20',
+      MAX_PAYMENT_VELOCITY_PER_MINUTE: '10',
+      __fetchMock: buildFetchMock({
+        userWallets: { [USER_A]: [WALLET_A] },
+        walletOwners: { [WALLET_A]: USER_A },
+        database: persistence,
+      }),
+    });
+    expressApp = mod.app;
+    testHooks = mod.testHooks;
+  });
+
+  afterAll(async () => {
+    await closeActiveModuleServers();
+  });
+
+  it('GET /payments/limits returns server-authoritative numbers and remaining quota', async () => {
+    persistence.paymentRecords = [
+      {
+        id: 'rec-1',
+        auth_user_id: USER_A,
+        wallet_address: WALLET_A,
+        amount: '200',
+        created_at: new Date().toISOString(),
+      },
+      {
+        id: 'rec-2',
+        auth_user_id: USER_A,
+        wallet_address: WALLET_A,
+        amount: '300',
+        created_at: new Date().toISOString(),
+      },
+    ];
+
+    const { status, body } = await getJson(
+      expressApp,
+      '/payments/limits',
+      { Authorization: makeBearerToken(USER_A) }
+    );
+
+    expect(status).toBe(200);
+    expect(body.maxAmountPerTransaction).toBe(1000);
+    expect(body.maxDailyAmount).toBe(5000);
+    expect(body.maxTransactionsPerDay).toBe(20);
+    expect(body.maxRequestsPerMinute).toBe(10);
+    expect(body.transactionsToday).toBe(2);
+    expect(body.amountToday).toBe(500);
+    expect(body.remaining).toEqual({
+      amount: 4500,
+      transactions: 18,
+    });
+  });
+
+  it('rejects payments exceeding the per-transaction cap (e.g. 1500 > 1000)', async () => {
+    await expect(
+      testHooks.checkPaymentLimits(WALLET_A, USER_A, '1500')
+    ).rejects.toMatchObject({
+      statusCode: 400,
+      code: 'PAYMENT_AMOUNT_EXCEEDED',
+    });
+  });
+
+  it('rejects payment when cumulative daily amount exceeds daily cap (5000)', async () => {
+    persistence.paymentRecords = [
+      {
+        id: 'rec-1',
+        auth_user_id: USER_A,
+        wallet_address: WALLET_A,
+        amount: '4800',
+        created_at: new Date().toISOString(),
+      },
+    ];
+
+    await expect(
+      testHooks.checkPaymentLimits(WALLET_A, USER_A, '300')
+    ).rejects.toMatchObject({
+      statusCode: 429,
+      code: 'PAYMENT_DAILY_CAP_EXCEEDED',
+      retryAfterSeconds: expect.any(Number),
+    });
+  });
+
+  it('rejects payment when daily transaction count reaches limit (20)', async () => {
+    persistence.paymentRecords = Array.from({ length: 20 }, (_, i) => ({
+      id: `rec-${i}`,
+      auth_user_id: USER_A,
+      wallet_address: WALLET_A,
+      amount: '10',
+      created_at: new Date(Date.now() - (20 - i) * 60 * 1000).toISOString(),
+    }));
+
+    await expect(
+      testHooks.checkPaymentLimits(WALLET_A, USER_A, '10')
+    ).rejects.toMatchObject({
+      statusCode: 429,
+      code: 'PAYMENT_DAILY_COUNT_EXCEEDED',
+      retryAfterSeconds: expect.any(Number),
+    });
+  });
+
+  it('rejects payment when velocity limit is exceeded (> 10 per minute)', async () => {
+    const now = Date.now();
+    persistence.paymentRecords = Array.from({ length: 10 }, (_, i) => ({
+      id: `velocity-${i}`,
+      auth_user_id: USER_A,
+      wallet_address: WALLET_A,
+      amount: '5',
+      created_at: new Date(now - (10 - i) * 1000).toISOString(),
+    }));
+
+    await expect(
+      testHooks.checkPaymentLimits(WALLET_A, USER_A, '5')
+    ).rejects.toMatchObject({
+      statusCode: 429,
+      code: 'PAYMENT_VELOCITY_EXCEEDED',
+      retryAfterSeconds: expect.any(Number),
+    });
+  });
+
+  it('fails closed when payment limits lookup errors out (503)', async () => {
+    const failMod = await loadServerModule({
+      __fetchMock: buildFetchMock({
+        userWallets: { [USER_A]: [WALLET_A] },
+        walletOwners: { [WALLET_A]: USER_A },
+        failPaymentRecordsLookup: true,
+      }),
+    });
+
+    await expect(
+      failMod.testHooks.checkPaymentLimits(WALLET_A, USER_A, '50')
+    ).rejects.toMatchObject({
+      statusCode: 503,
+      code: 'PAYMENT_LIMITS_UNAVAILABLE',
+      retryable: true,
+    });
+
+    const { status, body } = await getJson(
+      failMod.app,
+      '/payments/limits',
+      { Authorization: makeBearerToken(USER_A) }
+    );
+
+    expect(status).toBe(503);
+    expect(body.code).toBe('PAYMENT_LIMITS_UNAVAILABLE');
+  });
+
+  it('enforces limits even when client-side checks are completely bypassed (patched client)', async () => {
+    // Fill up daily allowance to 4900
+    persistence.paymentRecords = [
+      {
+        id: 'rec-bypass',
+        auth_user_id: USER_A,
+        wallet_address: WALLET_A,
+        amount: '4900',
+        created_at: new Date().toISOString(),
+      },
+    ];
+
+    // Client check bypassed: attempts to check limit for 200
+    await expect(
+      testHooks.checkPaymentLimits(WALLET_A, USER_A, '200')
+    ).rejects.toMatchObject({
+      statusCode: 429,
+      code: 'PAYMENT_DAILY_CAP_EXCEEDED',
+    });
+  });
+});
+

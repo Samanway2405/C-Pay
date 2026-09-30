@@ -1,3 +1,4 @@
+import { Logger } from './logger';
 import { Alert } from 'react-native';
 import { authenticateWithBiometric, authenticateWithPIN } from '../utils/biometric';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -31,7 +32,7 @@ export async function confirmPayment(amount: string, recipient: string): Promise
       return authenticateWithPIN();
     }
   } catch (error) {
-    console.error('Payment confirmation error:', error);
+    Logger.error('Payment confirmation error:', error);
     return false;
   }
 }

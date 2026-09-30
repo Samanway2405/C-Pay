@@ -10,7 +10,7 @@ import {
 } from 'react-native';
 import * as Clipboard from 'expo-clipboard';
 import { Ionicons } from '@expo/vector-icons';
-import { COLORS, SPACING, TYPOGRAPHY } from '../constants/theme';
+import { COLORS, SPACING, TYPOGRAPHY, createThemedStyles, useTheme } from '../constants/theme';
 import { convertAssetToINR, formatINR } from '../utils/currency';
 import { formatDateLong } from '../utils/date';
 import { formatWalletFingerprint, getCPayIdByWallet } from '../utils/cpayId';
@@ -47,6 +47,7 @@ export const TransactionDetailModal: React.FC<TransactionDetailModalProps> = ({
   currentWallet,
   isMerchantView = false,
 }) => {
+  useTheme();
   const [fromCPayId, setFromCPayId] = useState<string>('');
   const [toCPayId, setToCPayId] = useState<string>('');
 
@@ -72,18 +73,17 @@ export const TransactionDetailModal: React.FC<TransactionDetailModalProps> = ({
 
   const isReceived = transaction.to_address?.toLowerCase() === currentWallet?.toLowerCase();
   const amount = parseFloat(transaction.amount);
-  const inrAmount = convertAssetToINR(amount);
 
   const getStatusConfig = (status: string) => {
     switch (status) {
       case 'success':
-        return { label: 'Completed', icon: 'checkmark-circle', color: '#10b981', bg: 'rgba(16, 185, 129, 0.15)' };
+        return { label: 'Completed', icon: 'checkmark-circle', color: COLORS.transactionIncoming, bg: COLORS.transactionIncomingBg };
       case 'pending':
-        return { label: 'Processing', icon: 'time', color: '#f59e0b', bg: 'rgba(245, 158, 11, 0.15)' };
+        return { label: 'Processing', icon: 'time', color: COLORS.warning, bg: COLORS.transactionPendingBg };
       case 'failed':
-        return { label: 'Failed', icon: 'close-circle', color: '#ef4444', bg: 'rgba(239, 68, 68, 0.15)' };
+        return { label: 'Failed', icon: 'close-circle', color: COLORS.error, bg: COLORS.transactionFailedBg };
       default:
-        return { label: 'Unknown', icon: 'help-circle', color: COLORS.textSecondary, bg: COLORS.border };
+        return { label: 'Unknown', icon: 'help-circle', color: COLORS.textMuted, bg: COLORS.border };
     }
   };
 
@@ -142,12 +142,12 @@ export const TransactionDetailModal: React.FC<TransactionDetailModalProps> = ({
               <Text
                 style={[
                   styles.amountValue,
-                  { color: isMerchantView || isReceived ? '#10b981' : COLORS.text },
+                  { color: isMerchantView || isReceived ? COLORS.transactionIncoming : COLORS.text },
                 ]}
-                accessibilityLabel={`Amount: ${isMerchantView || isReceived ? 'received' : 'sent'} ${formatINR(inrAmount)}`}
+                accessibilityLabel={`Amount: ${isMerchantView || isReceived ? 'received' : 'sent'} ${formatMoneyAmount(amount)}`}
                 maxFontSizeMultiplier={1.3}
               >
-                {isMerchantView || isReceived ? '+' : '-'}{formatINR(inrAmount)}
+                {isMerchantView || isReceived ? '+' : '-'}{formatMoneyAmount(amount)}
               </Text>
             </View>
 
@@ -232,8 +232,8 @@ export const TransactionDetailModal: React.FC<TransactionDetailModalProps> = ({
                       {
                         backgroundColor:
                           transaction.transaction_type === 'merchant'
-                            ? 'rgba(59, 130, 246, 0.15)'
-                            : 'rgba(139, 92, 246, 0.15)',
+                            ? COLORS.transactionMerchantBg
+                            : COLORS.transactionTransferBg,
                       },
                     ]}
                   >
@@ -242,7 +242,7 @@ export const TransactionDetailModal: React.FC<TransactionDetailModalProps> = ({
                         styles.typeText,
                         {
                           color:
-                            transaction.transaction_type === 'merchant' ? '#3b82f6' : '#8b5cf6',
+                            transaction.transaction_type === 'merchant' ? COLORS.transactionMerchant : COLORS.transactionTransfer,
                         },
                       ]}
                     >
@@ -343,10 +343,10 @@ export const TransactionDetailModal: React.FC<TransactionDetailModalProps> = ({
   );
 };
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles((COLORS) => ({
   overlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    backgroundColor: COLORS.overlay,
     justifyContent: 'flex-end',
   },
   modalContainer: {
@@ -422,7 +422,7 @@ const styles = StyleSheet.create({
   },
   detailLabel: {
     fontSize: FONT_SIZES.sm,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     flex: 1,
   },
   detailValue: {
@@ -480,8 +480,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   doneButtonText: {
-    color: '#fff',
+    color: COLORS.textInverse,
     fontSize: FONT_SIZES.md,
     fontWeight: '600',
   },
-});
+}));
