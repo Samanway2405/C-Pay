@@ -1,5 +1,7 @@
 import { Logger } from '../utils/logger';
 import React, { useEffect } from 'react';
+
+// Splash screen: startup state for wallet initialization and redirect.
 import {
   View,
   Text,
@@ -10,7 +12,7 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { hasWallet } from '../services/wallet';
-import { COLORS, SPACING, TYPOGRAPHY, createThemedStyles, useTheme } from '../constants/theme';
+import { COLORS, SPACING, TYPOGRAPHY } from '../constants/theme';
 import { PILOT_NOTICE_TITLE } from '../utils/pilot';
 
 const FONT_SIZES = TYPOGRAPHY.sizes;

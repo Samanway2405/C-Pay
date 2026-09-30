@@ -1,5 +1,7 @@
 import { Logger } from '../utils/logger';
 import React, { useState, useEffect } from 'react';
+
+// Transaction history screen: reviews prior payments and wallet activity.
 import {
   View,
   Text,

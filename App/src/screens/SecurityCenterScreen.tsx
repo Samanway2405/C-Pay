@@ -1,5 +1,7 @@
 import { Logger } from '../utils/logger';
 import React, { useState } from 'react';
+
+// Security center screen: access protection and risk controls overview.
 import {
   View,
   Text,
