@@ -1,5 +1,7 @@
 import { Logger } from '../utils/logger';
 import React, { useState, useEffect } from 'react';
+
+// Forgot PIN screen: recovery path for users locked out of their wallet.
 import {
   View,
   Text,

@@ -1,5 +1,7 @@
 import { Logger } from '../utils/logger';
 import React, { useEffect, useRef, useState } from 'react';
+
+// Payment success screen: completion confirmation with receipt details.
 import {
   View,
   Text,

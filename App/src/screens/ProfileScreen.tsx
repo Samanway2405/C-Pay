@@ -1,5 +1,6 @@
-import { Logger } from '../utils/logger';
-import React, { useState, useEffect, useRef } from 'react';https://github.com/soumen0818/C-Pay/pull/128/conflict?name=App%252Fsrc%252Fscreens%252FSendMoneyScreen.tsx&ancestor_oid=96c7402b54c01bea4a82546e1c039d7102a63f62&base_oid=694dce9175e6b362c17559bb1b6462d396d6c505&head_oid=71d6fb69707e9fa05155138c0516f19427fa3b51
+import React, { useState, useEffect, useRef } from 'react';
+
+// Profile screen: wallet identity, photo, and account settings.
 import {
   View,
   Text,

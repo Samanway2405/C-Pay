@@ -1,4 +1,6 @@
 import React from 'react';
+
+// Onboarding screen: welcome and product education for first-time users.
 import {
   View,
   Text,

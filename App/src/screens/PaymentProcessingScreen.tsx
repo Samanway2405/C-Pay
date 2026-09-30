@@ -1,4 +1,6 @@
 import React, { useEffect, useRef } from 'react';
+
+// Payment processing screen: keeps users informed while the transfer settles.
 import {
   View,
   Text,
@@ -8,7 +10,7 @@ import {
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
-import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS, createThemedStyles, useTheme } from '../constants/theme';
+import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS } from '../constants/theme';
 
 const { width } = Dimensions.get('window');
 
@@ -27,7 +29,6 @@ export const PaymentProcessingScreen: React.FC<PaymentProcessingScreenProps> = (
   navigation,
   route,
 }) => {
-  useTheme();
   const { amount, recipientName, recipientAddress } = route.params;
   const [subtitle, setSubtitle] = React.useState('This may take a few seconds');
   

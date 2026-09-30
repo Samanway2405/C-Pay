@@ -1,5 +1,7 @@
 import { Logger } from '../utils/logger';
 import React, { useState, useEffect } from 'react';
+
+// Home screen: primary account overview for balances and payments.
 import {
   View,
   Text,
