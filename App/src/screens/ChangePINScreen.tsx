@@ -1,4 +1,6 @@
 import React, { useState } from 'react';
+
+// Change PIN screen: secure account recovery and wallet verification.
 import {
   View,
   Text,

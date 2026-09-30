@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
+
+// Email verification screen: validates ownership and login access.
 import {
   View,
   Text,
