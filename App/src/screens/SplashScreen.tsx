@@ -1,4 +1,6 @@
 import React, { useEffect } from 'react';
+
+// Splash screen: startup state for wallet initialization and redirect.
 import {
   View,
   Text,

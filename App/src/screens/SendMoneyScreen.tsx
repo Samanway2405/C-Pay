@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
+
+// Send money screen: user-driven transfer flow and recipient validation.
 import {
   View,
   Text,
