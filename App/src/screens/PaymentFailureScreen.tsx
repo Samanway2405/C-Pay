@@ -1,4 +1,6 @@
 import React, { useEffect, useRef } from 'react';
+
+// Payment failure screen: explains routing and retry steps after an error.
 import {
   View,
   Text,

@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
+
+// Profile screen: wallet identity, photo, and account settings.
 import {
   View,
   Text,

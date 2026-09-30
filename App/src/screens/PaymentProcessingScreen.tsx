@@ -1,4 +1,6 @@
 import React, { useEffect, useRef } from 'react';
+
+// Payment processing screen: keeps users informed while the transfer settles.
 import {
   View,
   Text,

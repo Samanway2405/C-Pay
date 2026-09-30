@@ -1,4 +1,6 @@
 import React, { useRef, useState } from 'react';
+
+// Profile setup screen: helps complete user identity for the wallet.
 import {
   View,
   Text,
