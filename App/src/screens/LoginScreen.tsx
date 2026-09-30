@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+
+// Login screen: secure wallet access via PIN or biometric unlock.
 import {
   View,
   Text,

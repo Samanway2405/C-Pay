@@ -1,4 +1,6 @@
 import React, { useRef, useState } from 'react';
+
+// Confirm PIN screen: final wallet confirmation before activation.
 import {
   View,
   Text,

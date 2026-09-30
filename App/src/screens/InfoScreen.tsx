@@ -1,4 +1,6 @@
 import React from 'react';
+
+// Info screen: educational and support details for wallet users.
 import { View, Text, StyleSheet, Linking } from 'react-native';
 import { COLORS, SPACING, FONT_SIZES } from '../constants/theme';
 import { Screen, Header, Button, InfoBanner } from '../components';
