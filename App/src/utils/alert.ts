@@ -1,3 +1,4 @@
+import { Logger } from './logger';
 /**
  * Custom Alert Utility
  * A modern, UI-based alert system to replace React Native's default Alert.alert
@@ -45,7 +46,7 @@ class AlertManager {
       this.showCallback(title, message, buttons, type);
     } else {
       // Fallback to native alert
-      console.warn('CustomAlert not initialized, falling back to native Alert');
+      Logger.warn('CustomAlert not initialized, falling back to native Alert');
       Alert.alert(title, message, buttons as any);
     }
   }

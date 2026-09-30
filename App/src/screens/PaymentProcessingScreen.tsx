@@ -102,7 +102,7 @@ export const PaymentProcessingScreen: React.FC<PaymentProcessingScreenProps> = (
   );
 };
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles((COLORS) => ({
   container: {
     flex: 1,
   },
@@ -120,7 +120,7 @@ const styles = StyleSheet.create({
     width: 120,
     height: 120,
     borderRadius: 60,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    backgroundColor: COLORS.whiteOverlay,
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: SPACING.xxl,
@@ -146,7 +146,7 @@ const styles = StyleSheet.create({
   },
   processingSubtitle: {
     fontSize: FONT_SIZES.md,
-    color: 'rgba(255, 255, 255, 0.85)',
+    color: COLORS.textOnBrandMuted,
     fontWeight: '500',
     textAlign: 'center',
     marginBottom: SPACING.xxl,
@@ -154,12 +154,12 @@ const styles = StyleSheet.create({
   warningBox: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.15)',
+    backgroundColor: COLORS.whiteOverlaySubtle,
     paddingHorizontal: SPACING.xl,
     paddingVertical: SPACING.md,
     borderRadius: BORDER_RADIUS.xl,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.3)',
+    borderColor: COLORS.whiteOverlayMedium,
     gap: SPACING.sm,
   },
   warningIcon: {
@@ -170,5 +170,4 @@ const styles = StyleSheet.create({
     color: COLORS.textInverse,
     fontWeight: '600',
   },
-});
-
+}));

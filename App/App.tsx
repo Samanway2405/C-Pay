@@ -9,8 +9,9 @@ import { PINDialog, CustomAlertProvider } from './src/components';
 import { setPINDialogHandler } from './src/utils/biometric';
 import { AlertManager } from './src/utils/alert';
 import { cachePinForSession, clearSessionPin, verifyPin } from './src/services/wallet';
+import { ThemeProvider, useTheme } from './src/constants/theme';
 
-export default function App() {
+const AppContent = () => {
   const [pinDialogVisible, setPinDialogVisible] = useState(false);
   const [pinDialogConfig, setPinDialogConfig] = useState({
     title: 'Enter PIN',
@@ -71,12 +72,14 @@ export default function App() {
     pinDialogConfig.resolve?.(null);
   };
 
+  const { colors, isDark } = useTheme();
+
   return (
-    <GestureHandlerRootView style={styles.container}>
+    <GestureHandlerRootView style={[styles.container, { backgroundColor: colors.background }]}>
       <SafeAreaProvider>
         <CustomAlertProvider>
           <Navigation />
-          <StatusBar style="auto" />
+          <StatusBar style={isDark ? 'light' : 'dark'} />
           <PINDialog
             visible={pinDialogVisible}
             title={pinDialogConfig.title}
@@ -87,6 +90,14 @@ export default function App() {
         </CustomAlertProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
+  );
+};
+
+export default function App() {
+  return (
+    <ThemeProvider>
+      <AppContent />
+    </ThemeProvider>
   );
 }
 

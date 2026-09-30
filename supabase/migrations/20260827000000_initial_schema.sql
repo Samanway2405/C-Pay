@@ -690,36 +690,3 @@ DROP TRIGGER IF EXISTS update_merchant_totals_on_transactions ON transactions;
 CREATE TRIGGER update_merchant_totals_on_transactions
 AFTER INSERT OR UPDATE OR DELETE ON transactions
 FOR EACH ROW EXECUTE FUNCTION update_merchant_totals_from_transaction();
-
--- Wallet Bindings Table for Server-Side Resolution
-
--- Migration: wallet_bindings
-
-CREATE TABLE IF NOT EXISTS wallet_bindings (
-    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    auth_user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
-    wallet_address TEXT NOT NULL,
-    is_active BOOLEAN NOT NULL DEFAULT TRUE,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    UNIQUE(auth_user_id, wallet_address)
-);
-
--- Backfill from users table
-INSERT INTO wallet_bindings (auth_user_id, wallet_address)
-SELECT auth_user_id, wallet_address
-FROM users
-WHERE auth_user_id IS NOT NULL AND wallet_address IS NOT NULL
-ON CONFLICT DO NOTHING;
-
--- RLS
-ALTER TABLE wallet_bindings ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY "wallet_bindings_select_own" ON wallet_bindings 
-FOR SELECT USING (auth_user_id = auth.uid());
-
-CREATE POLICY "wallet_bindings_insert_own" ON wallet_bindings 
-FOR INSERT WITH CHECK (auth_user_id = auth.uid());
-
-CREATE POLICY "wallet_bindings_update_own" ON wallet_bindings 
-FOR UPDATE USING (auth_user_id = auth.uid());
-

@@ -1,3 +1,4 @@
+import { Logger } from '../utils/logger';
 import React, { useRef, useState } from 'react';
 
 // Profile setup screen: helps complete user identity for the wallet.
@@ -17,7 +18,7 @@ import * as ImagePicker from 'expo-image-picker';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { supabase } from '../services/supabase';
-import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS, SHADOWS } from '../constants/theme';
+import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS, SHADOWS, createThemedStyles, useTheme } from '../constants/theme';
 import { Button, OnboardingProgress, FormField, InfoBanner } from '../components';
 import { AlertManager } from '../utils/alert';
 import { generateCPayId } from '../utils/cpayId';
@@ -28,6 +29,7 @@ interface ProfileSetupScreenProps {
 }
 
 export const ProfileSetupScreen: React.FC<ProfileSetupScreenProps> = ({ navigation, route }) => {
+  useTheme();
   const { walletAddress, phoneNumber } = route.params;
   const [fullName, setFullName] = useState('');
   const [profilePhoto, setProfilePhoto] = useState<string | null>(null);
@@ -54,13 +56,13 @@ export const ProfileSetupScreen: React.FC<ProfileSetupScreenProps> = ({ navigati
         setProfilePhoto(result.assets[0].uri);
       }
     } catch (error) {
-      console.error('Error picking image:', error);
+      Logger.error('Error picking image:', error);
     }
   };
 
   const uploadProfilePhoto = async (photoUri: string, address: string): Promise<string | null> => {
     try {
-      console.log('Uploading profile photo...');
+      Logger.info('Uploading profile photo...');
 
       // Read file as base64
       const base64 = await fetch(photoUri)
@@ -97,7 +99,7 @@ export const ProfileSetupScreen: React.FC<ProfileSetupScreenProps> = ({ navigati
         });
 
       if (uploadError) {
-        console.error('Upload error:', uploadError);
+        Logger.error('Upload error:', uploadError);
         return null;
       }
 
@@ -108,7 +110,7 @@ export const ProfileSetupScreen: React.FC<ProfileSetupScreenProps> = ({ navigati
 
       return urlData.publicUrl;
     } catch (error) {
-      console.error('Error uploading photo:', error);
+      Logger.error('Error uploading photo:', error);
       return null;
     }
   };
@@ -148,7 +150,7 @@ export const ProfileSetupScreen: React.FC<ProfileSetupScreenProps> = ({ navigati
       );
 
     if (dbError) {
-      console.error('Database error:', dbError);
+      Logger.error('Database error:', dbError);
     }
   };
 
@@ -205,7 +207,7 @@ export const ProfileSetupScreen: React.FC<ProfileSetupScreenProps> = ({ navigati
       // Cloud backup protects the wallet before optional biometric setup.
       navigation.replace('CloudBackupSetup');
     } catch (error) {
-      console.error('Profile setup error:', error);
+      Logger.error('Profile setup error:', error);
       completingRef.current = false;
       setLoading(false);
       AlertManager.alert('Error', 'Failed to save profile. Please try again.', undefined, { type: 'error' });
@@ -255,7 +257,7 @@ export const ProfileSetupScreen: React.FC<ProfileSetupScreenProps> = ({ navigati
                 <Image source={{ uri: profilePhoto }} style={styles.photo} />
               ) : (
                 <View style={styles.photoPlaceholder}>
-                  <Ionicons name="camera-outline" size={30} color={COLORS.textSecondary} style={styles.photoPlaceholderIcon} />
+                  <Ionicons name="camera-outline" size={30} color={COLORS.textMuted} style={styles.photoPlaceholderIcon} />
                   <Text style={styles.photoPlaceholderText}>Add Photo</Text>
                 </View>
               )}
@@ -318,7 +320,7 @@ export const ProfileSetupScreen: React.FC<ProfileSetupScreenProps> = ({ navigati
   );
 };
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles((COLORS) => ({
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
@@ -336,7 +338,7 @@ const styles = StyleSheet.create({
     width: 72,
     height: 72,
     borderRadius: 36,
-    backgroundColor: 'rgba(255, 255, 255, 0.18)',
+    backgroundColor: COLORS.whiteOverlayFaint,
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: SPACING.md,
@@ -371,7 +373,7 @@ const styles = StyleSheet.create({
     color: COLORS.error,
   },
   optional: {
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     fontWeight: '400',
   },
   photoContainer: {
@@ -400,7 +402,7 @@ const styles = StyleSheet.create({
   },
   photoPlaceholderText: {
     fontSize: FONT_SIZES.sm,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     fontWeight: '500',
   },
   removePhotoButton: {
@@ -418,15 +420,15 @@ const styles = StyleSheet.create({
   },
   footer: {
     fontSize: FONT_SIZES.xs,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     textAlign: 'center',
     marginTop: SPACING.lg,
     paddingHorizontal: SPACING.md,
   },
   loadingText: {
     fontSize: FONT_SIZES.sm,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     textAlign: 'center',
     marginTop: SPACING.md,
   },
-});
+}));

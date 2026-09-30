@@ -7,7 +7,7 @@
   "scripts": {
     "test": "jest",
     "create:keypairs": "node scripts/create-keypairs.js",
-    "setup:testnet": "node scripts/setup-testnet-asset.js"
+    "setup:usdc": "node scripts/setup-usdc-trustline.js"
   },
   "keywords": [
     "stellar",

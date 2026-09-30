@@ -101,7 +101,7 @@ describe('IngestWorker', () => {
       to: 'GAUNKNOWN_WALLET',
       amount: '50.0000000',
       asset_type: 'credit_alphanum4',
-      asset_code: 'CPINR',
+      asset_code: 'USDC',
       asset_issuer: 'GCISSUER123',
       created_at: '2026-08-28T12:00:00Z',
     };
@@ -120,7 +120,7 @@ describe('IngestWorker', () => {
       from_address: 'GAKNOWN_WALLET_1',
       to_address: 'GAUNKNOWN_WALLET',
       amount: '50.0000000',
-      asset_code: 'CPINR',
+      asset_code: 'USDC',
       asset_issuer: 'GCISSUER123',
       status: 'success',
       internal_status: 'confirmed',

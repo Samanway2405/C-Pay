@@ -1,3 +1,4 @@
+import { Logger } from '../utils/logger';
 import React, { useState, useEffect } from 'react';
 
 // Biometric setup screen: security onboarding flow for wallet access.
@@ -11,7 +12,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
 import { isBiometricAvailable, getBiometricType, enableBiometric } from '../utils/biometric';
 import { supabase } from '../services/supabase';
-import { COLORS, SPACING, TYPOGRAPHY, SHADOWS } from '../constants/theme';
+import { COLORS, SPACING, TYPOGRAPHY, SHADOWS, createThemedStyles, useTheme } from '../constants/theme';
 import { AlertManager } from '../utils/alert';
 import { OnboardingProgress } from '../components/OnboardingProgress';
 import { Screen, Button } from '../components';
@@ -29,6 +30,7 @@ export const BiometricSetupScreen: React.FC<BiometricSetupScreenProps> = ({
   navigation,
   route,
 }) => {
+  useTheme();
   const rawFlowType = route?.params?.flowType;
   const flowType: 'setup' | 'restore' =
     rawFlowType === 'restore' ? 'restore' : 'setup';
@@ -93,11 +95,11 @@ export const BiometricSetupScreen: React.FC<BiometricSetupScreenProps> = ({
             .eq('wallet_address', walletAddress);
 
           if (error) {
-            console.log('Failed to update Supabase, continuing...', error);
+            Logger.info('Failed to update Supabase, continuing...', error);
           }
         }
       } catch (dbError) {
-        console.log('Failed to update Supabase, continuing...', dbError);
+        Logger.info('Failed to update Supabase, continuing...', dbError);
       }
     })();
   };
@@ -126,7 +128,7 @@ export const BiometricSetupScreen: React.FC<BiometricSetupScreenProps> = ({
         setLoading(false);
       }
     } catch (error) {
-      console.error('Biometric authentication error:', error);
+// [SECURITY] Removed sensitive log: console.error('Biometric authentication error:', error);
       setLoading(false);
     }
   };
@@ -219,7 +221,7 @@ export const BiometricSetupScreen: React.FC<BiometricSetupScreenProps> = ({
   );
 };
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles((COLORS) => ({
   scrollContent: {
     flexGrow: 1,
     paddingBottom: SPACING.xl,
@@ -255,7 +257,7 @@ const styles = StyleSheet.create({
   },
   subtitle: {
     fontSize: isSmallDevice ? FONT_SIZES.sm : FONT_SIZES.md,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     textAlign: 'center',
     marginBottom: isSmallDevice ? SPACING.lg : SPACING.xl,
     paddingHorizontal: SPACING.sm,
@@ -292,8 +294,8 @@ const styles = StyleSheet.create({
   },
   skipNote: {
     fontSize: FONT_SIZES.xs,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     textAlign: 'center',
     marginTop: SPACING.sm,
   },
-});
+}));

@@ -38,8 +38,8 @@ export const A11Y = {
   // Buttons
   CONFIRM_PAYMENT: 'Confirm payment',
   CANCEL_PAYMENT: 'Cancel payment',
-  SEND_CREDITS: 'Send credits',
-  CLAIM_CREDITS: 'Claim pilot credits',
+  SEND_CREDITS: 'Send USDC',
+  CLAIM_CREDITS: 'Claim testnet USDC',
   VIEW_HISTORY: 'View transaction history',
   ADD_MONEY: 'Add money',
 
@@ -118,7 +118,7 @@ export const PIN = {
 
 export const HOME = {
   BALANCE_CARD_HINT: 'Your current balance',
-  PILOT_ONLY_HINT: 'Pilot credits only — no real currency',
+  PILOT_ONLY_HINT: 'Testnet USDC only — no monetary value',
   RECENT_TRANSACTIONS: 'Recent Transactions',
   SEE_ALL: 'See All',
   NO_TRANSACTIONS_TITLE: 'No Transactions Yet',
@@ -129,7 +129,7 @@ export const HOME = {
 // ─── Payments ─────────────────────────────────────────────────────────────────
 
 export const PAYMENT = {
-  SEND_TITLE: 'Send Credits',
+  SEND_TITLE: 'Send USDC',
   RECIPIENT_LABEL: 'To (C-Pay ID or wallet address)',
   RECIPIENT_PLACEHOLDER: 'user@cpay… or G…',
   AMOUNT_LABEL: 'Amount',
@@ -266,9 +266,9 @@ export const STATUS = {
 // ─── Add money ────────────────────────────────────────────────────────────────
 
 export const ADD_MONEY = {
-  TITLE: 'Claim Pilot Credits',
+  TITLE: 'Claim Testnet USDC',
   CLAIM_BUTTON: 'Claim',
-  CLAIM_SUCCESS_TITLE: 'Credits Added',
+  CLAIM_SUCCESS_TITLE: 'Testnet USDC Added',
   CLAIM_COOLDOWN_TITLE: 'Next Claim Available',
   CLAIM_ERROR_TITLE: 'Credit Claim Failed',
   COOLDOWN_HINT: (time: string) => `You can claim again in ${time}`,

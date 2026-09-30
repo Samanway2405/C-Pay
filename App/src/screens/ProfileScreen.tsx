@@ -7,32 +7,25 @@ import {
   StyleSheet,
   TouchableOpacity,
   Switch,
-  Image,
-  Platform,
 } from 'react-native';
-import * as Clipboard from 'expo-clipboard';
-import * as ImagePicker from 'expo-image-picker';
-import * as MediaLibrary from 'expo-media-library';
-import * as Sharing from 'expo-sharing';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import QRCode from 'react-native-qrcode-svg';
-import ViewShot from 'react-native-view-shot';
 import { Ionicons } from '@expo/vector-icons';
+import { InitialAvatar } from '../components/InitialAvatar';
 import { useFocusEffect } from '@react-navigation/native';
 import { supabase } from '../services/supabase';
-import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS, SHADOWS } from '../constants/theme';
+import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS, SHADOWS, createThemedStyles, useTheme } from '../constants/theme';
 import { Screen, Section, ActionRow } from '../components';
 import { AlertManager } from '../utils/alert';
-import { formatWalletFingerprint, getCurrentUserCPayId } from '../utils/cpayId';
-import { getMediaLibraryDownloadErrorMessage, requestPhotoSavePermission } from '../utils/mediaLibrary';
 import { clearSessionPin } from '../services/wallet';
-import { generatePaymentQR } from '../utils/qrCode';
-
+import { useProfileData } from '../hooks/useProfileData';
+import { ProfileHeader } from '../components/profile/ProfileHeader';
+import { ProfileQRCode } from '../components/profile/ProfileQRCode';
 interface ProfileScreenProps {
   navigation: any;
 }
 
 export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
+  useTheme();
   const [walletAddress, setWalletAddress] = useState<string>('');
   const [cpayId, setCpayId] = useState<string>('');
   const [displayName, setDisplayName] = useState<string>('');
@@ -89,7 +82,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
         if (localName) setDisplayName(localName);
       }
     } catch (error) {
-      console.error('Error loading display name:', error);
+      Logger.error('Error loading display name:', error);
       const localName = await AsyncStorage.getItem('display_name');
       if (localName) setDisplayName(localName);
     }
@@ -118,7 +111,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
         if (localPhoto) setProfilePhoto(localPhoto);
       }
     } catch (error) {
-      console.error('Error loading profile photo:', error);
+      Logger.error('Error loading profile photo:', error);
     }
   };
 
@@ -151,7 +144,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
         }
       }
     } catch (error) {
-      console.error('Error picking image:', error);
+      Logger.error('Error picking image:', error);
       AlertManager.alert('Error', 'Failed to update profile photo', undefined, { type: 'error' });
     }
   };
@@ -193,7 +186,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
         });
 
       if (uploadError) {
-        console.error('Upload error details:', uploadError);
+        Logger.error('Upload error details:', uploadError);
         return null;
       }
 
@@ -208,12 +201,12 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
         .update({ profile_photo_url: publicUrl })
         .eq('wallet_address', address);
 
-      if (dbError) console.error('Database update error:', dbError);
+      if (dbError) Logger.error('Database update error:', dbError);
 
       await AsyncStorage.setItem('profile_photo', publicUrl);
       return publicUrl;
     } catch (error) {
-      console.error('Error uploading profile photo:', error);
+      Logger.error('Error uploading profile photo:', error);
       return null;
     }
   };
@@ -240,7 +233,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
         AlertManager.alert('Not Available', 'Sharing is not available on this device');
       }
     } catch (error) {
-      console.error('Error sharing QR code:', error);
+      Logger.error('Error sharing QR code:', error);
       AlertManager.alert('Error', 'Failed to share QR code', undefined, { type: 'error' });
     }
   };
@@ -258,7 +251,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
         AlertManager.alert('Saved', 'QR code saved to your gallery.', undefined, { type: 'success' });
       }
     } catch (error) {
-      console.error('Error downloading QR code:', error);
+      Logger.error('Error downloading QR code:', error);
       AlertManager.alert('Error', getMediaLibraryDownloadErrorMessage(error), undefined, { type: 'error' });
     }
   };
@@ -298,10 +291,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
       {/* Identity */}
       <View style={styles.profileHeader}>
         <TouchableOpacity style={styles.profilePhotoContainer} onPress={handlePickImage}>
-          <Image
-            source={profilePhoto ? { uri: profilePhoto } : require('../../assets/default-profile-image-cryptopay.png')}
-            style={styles.profilePhoto}
-          />
+          {profilePhoto ? <Image source={{ uri: profilePhoto }} style={styles.profilePhoto} /> : <InitialAvatar name={displayName || 'User'} id={walletAddress} size={100} style={styles.profilePhoto} />}
           <View style={styles.editIconContainer}>
             <Ionicons name="camera-outline" size={15} color={COLORS.primary} />
           </View>
@@ -322,7 +312,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
               <Ionicons name="qr-code-outline" size={24} color={COLORS.primary} style={styles.qrCodeIcon} />
               <Text style={styles.qrCodeTitle}>My QR Code</Text>
             </View>
-            <Ionicons name={showQRCode ? 'chevron-up' : 'chevron-down'} size={22} color={COLORS.textSecondary} />
+            <Ionicons name={showQRCode ? 'chevron-up' : 'chevron-down'} size={22} color={COLORS.textMuted} />
           </View>
 
           {showQRCode && (
@@ -330,10 +320,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
               <ViewShot ref={qrCodeRef} options={{ format: 'png', quality: 1.0 }}>
                 <View style={styles.shareableQRCard}>
                   <View style={styles.shareCardProfile}>
-                    <Image
-                      source={profilePhoto ? { uri: profilePhoto } : require('../../assets/default-profile-image-cryptopay.png')}
-                      style={styles.shareCardProfilePhoto}
-                    />
+                    {profilePhoto ? <Image source={{ uri: profilePhoto }} style={styles.shareCardProfilePhoto} /> : <InitialAvatar name={displayName || 'User'} id={walletAddress} size={70} style={styles.shareCardProfilePhoto} />}
                     {!!displayName && <Text style={styles.shareCardName}>{displayName}</Text>}
                     <Text style={styles.shareCardAddress}>{cpayId || formatWalletFingerprint(walletAddress)}</Text>
                   </View>
@@ -415,7 +402,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
                 value={notificationsEnabled}
                 onValueChange={handleToggleNotifications}
                 trackColor={{ false: COLORS.border, true: COLORS.primary + '50' }}
-                thumbColor={notificationsEnabled ? COLORS.primary : COLORS.textSecondary}
+                thumbColor={notificationsEnabled ? COLORS.primary : COLORS.textMuted}
               />
             }
           />
@@ -479,59 +466,7 @@ export const ProfileScreen: React.FC<ProfileScreenProps> = ({ navigation }) => {
   );
 };
 
-const styles = StyleSheet.create({
-  profileHeader: {
-    alignItems: 'center',
-    marginBottom: SPACING.xl,
-    paddingVertical: SPACING.lg,
-  },
-  profilePhotoContainer: {
-    position: 'relative',
-    marginBottom: SPACING.md,
-  },
-  profilePhoto: {
-    width: 100,
-    height: 100,
-    borderRadius: 50,
-    borderWidth: 3,
-    borderColor: COLORS.primary,
-  },
-  editIconContainer: {
-    position: 'absolute',
-    bottom: 0,
-    right: 0,
-    backgroundColor: COLORS.surface,
-    borderRadius: 15,
-    width: 30,
-    height: 30,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 2,
-    borderColor: COLORS.background,
-  },
-  profileName: {
-    fontSize: FONT_SIZES.xxl,
-    fontWeight: '700',
-    color: COLORS.text,
-    marginBottom: SPACING.xs,
-  },
-  addressContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: COLORS.surface,
-    paddingHorizontal: SPACING.lg,
-    paddingVertical: SPACING.md,
-    borderRadius: BORDER_RADIUS.md,
-    marginBottom: SPACING.md,
-    ...SHADOWS.sm,
-  },
-  profileAddress: {
-    fontSize: FONT_SIZES.sm,
-    color: COLORS.textSecondary,
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
-    flex: 1,
-    marginRight: SPACING.sm,
-  },
+const styles = createThemedStyles((COLORS) => ({
   section: {
     marginBottom: SPACING.xl,
   },
@@ -550,119 +485,6 @@ const styles = StyleSheet.create({
     height: StyleSheet.hairlineWidth,
     backgroundColor: COLORS.border,
     marginHorizontal: SPACING.sm,
-  },
-  qrCodeCard: {
-    backgroundColor: COLORS.surface,
-    borderRadius: BORDER_RADIUS.lg,
-    padding: SPACING.lg,
-    ...SHADOWS.md,
-  },
-  qrCodeHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  qrCodeHeaderLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  qrCodeIcon: {
-    marginRight: SPACING.sm,
-  },
-  qrCodeTitle: {
-    fontSize: FONT_SIZES.lg,
-    fontWeight: '600',
-    color: COLORS.text,
-  },
-  qrCodeContent: {
-    alignItems: 'center',
-    marginTop: SPACING.lg,
-  },
-  shareableQRCard: {
-    backgroundColor: '#ffffff',
-    padding: SPACING.xl,
-    borderRadius: BORDER_RADIUS.lg,
-    alignItems: 'center',
-    width: 320,
-  },
-  shareCardProfile: {
-    alignItems: 'center',
-    marginBottom: SPACING.lg,
-  },
-  shareCardProfilePhoto: {
-    width: 70,
-    height: 70,
-    borderRadius: 35,
-    borderWidth: 2,
-    borderColor: COLORS.primary,
-    marginBottom: SPACING.sm,
-  },
-  shareCardName: {
-    fontSize: FONT_SIZES.lg,
-    fontWeight: '600',
-    color: COLORS.text,
-    marginBottom: SPACING.xs,
-  },
-  shareCardAddress: {
-    fontSize: FONT_SIZES.sm,
-    color: COLORS.textSecondary,
-    fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
-  },
-  shareCardFooter: {
-    marginTop: SPACING.lg,
-    paddingTop: SPACING.md,
-    borderTopWidth: 1,
-    borderTopColor: COLORS.border,
-  },
-  shareCardFooterText: {
-    fontSize: FONT_SIZES.sm,
-    color: COLORS.textSecondary,
-    textAlign: 'center',
-  },
-  qrCodeWrapper: {
-    padding: SPACING.lg,
-    backgroundColor: '#ffffff',
-    borderRadius: BORDER_RADIUS.md,
-    ...SHADOWS.md,
-  },
-  qrCodeDescription: {
-    fontSize: FONT_SIZES.sm,
-    color: COLORS.textSecondary,
-    textAlign: 'center',
-    marginTop: SPACING.md,
-    marginBottom: SPACING.md,
-  },
-  qrActionButtons: {
-    flexDirection: 'row',
-    gap: SPACING.sm,
-    width: '100%',
-    paddingHorizontal: SPACING.md,
-  },
-  qrActionButton: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: COLORS.surface,
-    paddingVertical: SPACING.sm,
-    paddingHorizontal: SPACING.sm,
-    borderRadius: BORDER_RADIUS.md,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    gap: SPACING.xs,
-    ...SHADOWS.sm,
-  },
-  qrShareButton: {
-    backgroundColor: COLORS.primary,
-    borderColor: COLORS.primary,
-  },
-  qrActionButtonText: {
-    fontSize: FONT_SIZES.sm,
-    fontWeight: '600',
-    color: COLORS.text,
-  },
-  shareButtonText: {
-    color: COLORS.textInverse,
   },
   signOutSection: {
     marginBottom: SPACING.xl,
@@ -688,7 +510,7 @@ const styles = StyleSheet.create({
   },
   signOutHint: {
     fontSize: FONT_SIZES.xs,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     textAlign: 'center',
     fontStyle: 'italic',
   },
@@ -701,11 +523,11 @@ const styles = StyleSheet.create({
   },
   footerText: {
     fontSize: FONT_SIZES.sm,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     marginBottom: SPACING.xs,
   },
   footerSubtext: {
     fontSize: FONT_SIZES.xs,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
   },
-});
+}));

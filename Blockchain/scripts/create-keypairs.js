@@ -12,7 +12,5 @@ console.log('# Store secrets only in backend/server environments.');
 console.log('# Public keys can be used by the app and database.');
 console.log('');
 
-printKeypair('ASSET_ISSUER');
-printKeypair('ASSET_DISTRIBUTION');
-printKeypair('CONTRACT_ADMIN');
-printKeypair('RELAYER');
+printKeypair('SPONSOR');
+printKeypair('DISTRIBUTION');

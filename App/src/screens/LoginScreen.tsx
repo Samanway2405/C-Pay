@@ -1,3 +1,4 @@
+import { Logger } from '../utils/logger';
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 
 // Login screen: secure wallet access via PIN or biometric unlock.
@@ -14,6 +15,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { PINInput } from '../components/PINInput';
 import { Screen } from '../components';
 import {
+  attemptsUntilWipe,
   cachePinForSession,
   clearPinAttempts,
   getWalletFromBiometricBackup,
@@ -22,11 +24,16 @@ import {
   isLockedOut,
   lockoutRemainingMs,
   MAX_PIN_ATTEMPTS,
+  MAX_LOCKOUT_MS,
   recordFailedPinAttempt,
+  shouldWarnAboutWipe,
+  shouldWipeWallet,
   verifyPin,
+  wipeWalletAfterFailedAttempts,
+  WIPE_PIN_ATTEMPTS,
 } from '../services/wallet';
 import { isBiometricAvailable, getBiometricType } from '../utils/biometric';
-import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS } from '../constants/theme';
+import { COLORS, SPACING, TYPOGRAPHY, BORDER_RADIUS, createThemedStyles, useTheme } from '../constants/theme';
 import { AlertManager } from '../utils/alert';
 
 const FONT_SIZES = TYPOGRAPHY.sizes;
@@ -44,6 +51,7 @@ function formatCountdown(ms: number): string {
 }
 
 export const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
+  useTheme();
   const [pin, setPin] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -61,7 +69,13 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
   // ── Load persisted attempt state on mount ──────────────────────────────────
   useEffect(() => {
     void (async () => {
-      const state = await getPinAttemptState();
+      const result = await getPinAttemptState();
+      if (result.status === 'unknown') {
+        setLockoutMs(MAX_LOCKOUT_MS);
+        startCountdown();
+        return;
+      }
+      const state = result.state;
       setAttemptCount(state.attempts);
       const remaining = lockoutRemainingMs(state);
       if (remaining > 0) {
@@ -76,7 +90,12 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
   const startCountdown = useCallback(() => {
     if (countdownRef.current) return;
     countdownRef.current = setInterval(async () => {
-      const state = await getPinAttemptState();
+      const result = await getPinAttemptState();
+      if (result.status === 'unknown') {
+        setLockoutMs(MAX_LOCKOUT_MS);
+        return;
+      }
+      const state = result.state;
       const remaining = lockoutRemainingMs(state);
       setLockoutMs(remaining);
       if (remaining <= 0) {
@@ -130,7 +149,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
         AlertManager.alert('Authentication Failed', 'Please use your PIN to unlock this wallet.');
       }
     } catch (err) {
-      console.error('Biometric auth error:', err);
+// [SECURITY] Removed sensitive log: console.error('Biometric auth error:', err);
       AlertManager.alert('Authentication Failed', 'Please use your PIN to unlock this wallet.');
     }
   };
@@ -151,7 +170,15 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
 
     try {
       // Re-check lockout state right before verifying (prevents race conditions).
-      const currentState = await getPinAttemptState();
+      const currentResult = await getPinAttemptState();
+      if (currentResult.status === 'unknown') {
+        setLockoutMs(MAX_LOCKOUT_MS);
+        startCountdown();
+        setPin('');
+        setLoading(false);
+        return;
+      }
+      const currentState = currentResult.state;
       if (isLockedOut(currentState)) {
         const remaining = lockoutRemainingMs(currentState);
         setLockoutMs(remaining);
@@ -175,6 +202,23 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
       } else {
         const nextState = await recordFailedPinAttempt();
         setAttemptCount(nextState.attempts);
+
+        // Wipe threshold reached: erase local wallet state and send the user to
+        // recovery. Checked before lockout messaging — once we wipe, there is
+        // nothing left to lock out.
+        if (shouldWipeWallet(nextState)) {
+          await wipeWalletAfterFailedAttempts();
+          setPin('');
+          setLoading(false);
+          AlertManager.alert(
+            'Wallet erased from this device',
+            `After ${WIPE_PIN_ATTEMPTS} incorrect PIN attempts, the wallet has been removed from this device to protect it.\n\n` +
+              'Your account and funds are safe. If you saved an encrypted cloud backup, restore it with your email and recovery password. ' +
+              'Without a cloud backup this wallet cannot be recovered.',
+            [{ text: 'Restore wallet', onPress: () => navigation.replace('Onboarding') }],
+          );
+          return;
+        }
 
         const remaining = lockoutRemainingMs(nextState);
         if (remaining > 0) {
@@ -251,6 +295,24 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
             </Text>
           </View>
         )}
+
+        {/* Impending-wipe warning — surfaced before the threshold, never at it,
+            because a user without a cloud backup loses the wallet for good. */}
+        {shouldWarnAboutWipe({ attempts: attemptCount, lockedUntil: 0 }) && (
+          <View style={styles.wipeWarningBanner}>
+            <Ionicons name="alert-circle-outline" size={20} color={COLORS.error} style={styles.lockoutIcon} />
+            <View style={styles.lockoutTextBlock}>
+              <Text style={styles.wipeWarningTitle}>
+                {attemptsUntilWipe({ attempts: attemptCount, lockedUntil: 0 })} attempt
+                {attemptsUntilWipe({ attempts: attemptCount, lockedUntil: 0 }) === 1 ? '' : 's'} before this wallet is erased
+              </Text>
+              <Text style={styles.wipeWarningBody}>
+                After {WIPE_PIN_ATTEMPTS} incorrect attempts the wallet is removed from this device.
+                You will need your cloud backup and recovery password to restore it.
+              </Text>
+            </View>
+          </View>
+        )}
       </View>
 
       {showBiometric && !locked && (
@@ -273,7 +335,7 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
   );
 };
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles((COLORS) => ({
   header: {
     alignItems: 'center',
     marginTop: SPACING.xxl,
@@ -293,7 +355,7 @@ const styles = StyleSheet.create({
   },
   subtitle: {
     fontSize: FONT_SIZES.md,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
   },
   pinSection: {
     marginBottom: SPACING.xl,
@@ -306,7 +368,7 @@ const styles = StyleSheet.create({
   },
   statusText: {
     fontSize: FONT_SIZES.sm,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     marginLeft: SPACING.sm,
   },
   lockoutBanner: {
@@ -340,6 +402,28 @@ const styles = StyleSheet.create({
   lockoutCountdown: {
     fontWeight: '700',
     fontVariant: ['tabular-nums'],
+  },
+  wipeWarningBanner: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: COLORS.errorBg,
+    borderRadius: BORDER_RADIUS.md,
+    borderWidth: 1,
+    borderColor: COLORS.error,
+    padding: SPACING.md,
+    marginTop: SPACING.md,
+    gap: SPACING.sm,
+  },
+  wipeWarningTitle: {
+    fontSize: FONT_SIZES.sm,
+    fontWeight: '700',
+    color: COLORS.error,
+    marginBottom: SPACING.xs,
+  },
+  wipeWarningBody: {
+    fontSize: FONT_SIZES.sm,
+    color: COLORS.errorDark,
+    lineHeight: 20,
   },
   warningBanner: {
     flexDirection: 'row',
@@ -386,4 +470,4 @@ const styles = StyleSheet.create({
     color: COLORS.primary,
     fontWeight: '500',
   },
-});
+}));

@@ -1,3 +1,4 @@
+import { Logger } from '../utils/logger';
 import React, { useState, useEffect, useRef } from 'react';
 import {
   View,
@@ -9,11 +10,10 @@ import {
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Ionicons } from '@expo/vector-icons';
-import { getBalance, isValidAccountId, transferTokens } from '../services/blockchain';
-import { saveTransaction, getUserDisplayName } from '../services/storage';
-import { getAuthenticatedWallet } from '../utils/biometric';
+import { getBalance, isValidAccountId } from '../services/blockchain';
+import { getUserDisplayName } from '../services/storage';
 import { formatWalletFingerprint, getCPayIdByWallet, isValidCPayId, getWalletAddressFromCPayId } from '../utils/cpayId';
-import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS, SHADOWS } from '../constants/theme';
+import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS, SHADOWS, createThemedStyles, useTheme } from '../constants/theme';
 import {
   Button,
   Screen,
@@ -25,9 +25,12 @@ import {
   PaymentReviewSheet,
 } from '../components';
 import { AlertManager } from '../utils/alert';
-import { MONEY_SYMBOL, MONEY_UNIT_LABEL, formatMoneyAmount } from '../utils/currency';
+import { MONEY_SYMBOL, MONEY_UNIT_LABEL, formatMoneyAmount, formatMoneyBalance } from '../utils/currency';
 import { PILOT_TESTNET_TEXT } from '../utils/pilot';
-import { getPaymentFailureCopy } from '../utils/paymentFailure';
+import { usePaymentIntent } from '../hooks/usePaymentIntent';
+import { usePaymentSubmission } from '../hooks/usePaymentSubmission';
+import { useRecipientLookup } from '../hooks/useRecipientLookup';
+import { checkTransactionLimit } from '../services/securityLimits';
 
 interface SendMoneyScreenProps {
   navigation: any;
@@ -35,25 +38,40 @@ interface SendMoneyScreenProps {
 }
 
 export const SendMoneyScreen: React.FC<SendMoneyScreenProps> = ({ navigation, route }) => {
+  useTheme();
   const [walletAddress, setWalletAddress] = useState<string>('');
-  const [recipientAddress, setRecipientAddress] = useState<string>('');
-  const [recipientInput, setRecipientInput] = useState<string>(''); // Store original input (C-Pay ID or wallet)
-  const [recipientName, setRecipientName] = useState<string>('');
-  const [recipientCPayId, setRecipientCPayId] = useState<string>('');
-  const [amount, setAmount] = useState<string>(''); // User enters pilot credit amount.
+  const [amount, setAmount] = useState<string>(''); // User enters USDC, up to seven decimals.
   const [note, setNote] = useState<string>('');
   const [loading, setLoading] = useState(false);
   const [balance, setBalance] = useState<string>('0');
   const [hideBalance, setHideBalance] = useState<boolean>(false);
   const [isFromQR, setIsFromQR] = useState<boolean>(false);
   const [hasPresetAmount, setHasPresetAmount] = useState<boolean>(false);
-  const [fetchingRecipient, setFetchingRecipient] = useState<boolean>(false);
-  const [recipientFetched, setRecipientFetched] = useState<boolean>(false);
   const [showReview, setShowReview] = useState<boolean>(false);
-  const [submitting, setSubmitting] = useState<boolean>(false);
-  const paymentInProgress = useRef<boolean>(false);
-  const networkTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const recipientLookupSeq = useRef<number>(0);
+
+  const {
+    idempotencyKey,
+    createIntent,
+    getOrCreateIntent,
+    clearIntent,
+    resetIntent,
+  } = usePaymentIntent(route?.params?.idempotencyKey || null);
+
+  const {
+    recipientInput,
+    setRecipientInput,
+    recipientAddress,
+    setRecipientAddress,
+    recipientName,
+    setRecipientName,
+    recipientCPayId,
+    setRecipientCPayId,
+    fetchingRecipient,
+    recipientFetched,
+    fetchRecipientName,
+    handleAddressChange,
+    resetRecipient,
+  } = useRecipientLookup(walletAddress, isFromQR);
 
   useEffect(() => {
     loadWalletData();
@@ -76,8 +94,8 @@ export const SendMoneyScreen: React.FC<SendMoneyScreenProps> = ({ navigation, ro
       setRecipientName(routeRecipientName);
     }
     if (route?.params?.amount && parseFloat(route.params.amount) > 0) {
-      // Amount is already in the user-visible credit unit.
-      setAmount(parseFloat(route.params.amount).toFixed(2));
+      // QR/deep-link amounts are already USDC strings validated to seven decimals.
+      setAmount(String(route.params.amount).trim());
       setHasPresetAmount(true);
     }
     if (route?.params?.note) {
@@ -89,29 +107,10 @@ export const SendMoneyScreen: React.FC<SendMoneyScreenProps> = ({ navigation, ro
     if (route?.params?.isFromQR) {
       setIsFromQR(true);
     }
+    if (route?.params?.idempotencyKey) {
+      createIntent(route.params.idempotencyKey);
+    }
   }, [route?.params]);
-
-  // Handle back button during payment
-  useEffect(() => {
-    const backHandler = BackHandler.addEventListener('hardwareBackPress', () => {
-      if (paymentInProgress.current) {
-        AlertManager.alert(
-          'Transaction Cancelled',
-          'Payment was interrupted. If the transaction was submitted, it may still complete.',
-          [{ text: 'OK', onPress: () => navigation.goBack() }]
-        );
-        return true; // Prevent default back behavior
-      }
-      return false; // Allow default back behavior
-    });
-
-    return () => {
-      backHandler.remove();
-      if (networkTimeoutRef.current) {
-        clearTimeout(networkTimeoutRef.current);
-      }
-    };
-  }, []);
 
   const loadWalletData = async () => {
     try {
@@ -121,16 +120,16 @@ export const SendMoneyScreen: React.FC<SendMoneyScreenProps> = ({ navigation, ro
         await loadBalance(address);
       }
     } catch (error) {
-      console.error('Error loading wallet:', error);
+      Logger.error('Error loading wallet:', error);
     }
   };
 
   const loadBalance = async (address: string) => {
     try {
       const formatted = await getBalance(address);
-      setBalance(parseFloat(formatted).toFixed(2));
+      setBalance(formatted);
     } catch (error) {
-      console.error('Error loading balance:', error);
+      Logger.error('Error loading balance:', error);
       setBalance('0.00');
     }
   };
@@ -182,7 +181,7 @@ export const SendMoneyScreen: React.FC<SendMoneyScreenProps> = ({ navigation, ro
         setRecipientFetched(false);
       }
     } catch (error) {
-      console.log('Error fetching recipient name:', error);
+      Logger.info('Error fetching recipient name:', error);
       setRecipientName('');
       setRecipientCPayId('');
       setRecipientFetched(false);
@@ -222,7 +221,7 @@ export const SendMoneyScreen: React.FC<SendMoneyScreenProps> = ({ navigation, ro
           setRecipientFetched(false);
         }
       } catch (error) {
-        console.error('Error looking up C-Pay ID:', error);
+        Logger.error('Error looking up C-Pay ID:', error);
       } finally {
         setFetchingRecipient(false);
       }
@@ -275,9 +274,18 @@ export const SendMoneyScreen: React.FC<SendMoneyScreenProps> = ({ navigation, ro
   };
 
   // Open the unified review sheet (shared by manual send and scan-to-pay).
-  const handleSendMoney = () => {
+  const handleSendMoney = async () => {
     if (submitting || paymentInProgress.current) return;
     if (!validateInputs()) return;
+
+    // Instant UX feedback against server limits
+    const limitCheck = await checkTransactionLimit(amount);
+    if (!limitCheck.allowed) {
+      AlertManager.alert('Transaction Limit', limitCheck.reason || 'Transaction limit exceeded');
+      return;
+    }
+
+    getOrCreateIntent();
     setShowReview(true);
   };
 
@@ -289,6 +297,7 @@ export const SendMoneyScreen: React.FC<SendMoneyScreenProps> = ({ navigation, ro
     const effectiveRecipientName = recipientName;
     const effectiveRecipientCPayId = recipientCPayId;
     const displayId = effectiveRecipientCPayId || formatWalletFingerprint(recipientAddress);
+    const activeIntentKey = getOrCreateIntent();
 
     const timestamp = () =>
       new Date().toLocaleString('en-US', {
@@ -347,12 +356,16 @@ export const SendMoneyScreen: React.FC<SendMoneyScreenProps> = ({ navigation, ro
         amount,
         {
           note,
+          idempotencyKey: activeIntentKey,
         }
       );
 
       // Clear timeout on success
       if (networkTimeoutRef.current) clearTimeout(networkTimeoutRef.current);
       paymentInProgress.current = false;
+
+      // Terminal state: clear payment intent
+      clearIntent();
 
       // Calculate processing time
       const processingTime = Math.round((Date.now() - startTime) / 1000);
@@ -376,8 +389,8 @@ export const SendMoneyScreen: React.FC<SendMoneyScreenProps> = ({ navigation, ro
       };
 
       saveTransaction(transactionData)
-        .then(() => console.log('✅ Transaction saved and synced'))
-        .catch(err => console.error('❌ Transaction save/sync error:', err));
+// [SECURITY] Removed sensitive log: .then(() => console.log('✅ Transaction saved and synced'))
+// [SECURITY] Removed sensitive log: .catch(err => console.error('❌ Transaction save/sync error:', err));
 
       // Navigate to Success screen
       navigation.replace('PaymentSuccess', {
@@ -397,6 +410,10 @@ export const SendMoneyScreen: React.FC<SendMoneyScreenProps> = ({ navigation, ro
       setSubmitting(false);
 
       const copy = getPaymentFailureCopy(error);
+      const isTerminalFailure = copy.category === 'support';
+      if (isTerminalFailure) {
+        clearIntent();
+      }
 
       // Navigate to Failure screen
       navigation.replace('PaymentFailure', {
@@ -408,6 +425,8 @@ export const SendMoneyScreen: React.FC<SendMoneyScreenProps> = ({ navigation, ro
         errorCode: copy.errorCode,
         category: copy.category,
         timestamp: timestamp(),
+        note: note || undefined,
+        idempotencyKey: isTerminalFailure ? undefined : activeIntentKey,
       });
     }
   };
@@ -446,7 +465,7 @@ export const SendMoneyScreen: React.FC<SendMoneyScreenProps> = ({ navigation, ro
       preset="scroll"
       loading={loading || submitting}
       loadingText="Processing payment..."
-      header={<Header title="Send Pilot Credits" onBack={handleBackPress} />}
+      header={<Header title="Send USDC" onBack={handleBackPress} />}
       bottomAction={
         <BottomActionBar>
           <Button
@@ -470,10 +489,10 @@ export const SendMoneyScreen: React.FC<SendMoneyScreenProps> = ({ navigation, ro
       {/* Balance Card - Hidden when scanned from other places */}
       {!hideBalance && (
         <View style={styles.balanceCard}>
-          <Text style={styles.balanceLabel}>Available Credits</Text>
+          <Text style={styles.balanceLabel}>Available USDC</Text>
           <View style={styles.balanceRow}>
             <Text style={styles.balanceCurrency}>{MONEY_SYMBOL}</Text>
-            <Text style={styles.balanceAmount}>{parseFloat(balance).toFixed(2)}</Text>
+            <Text style={styles.balanceAmount}>{formatMoneyBalance(balance)}</Text>
           </View>
         </View>
       )}
@@ -581,7 +600,7 @@ export const SendMoneyScreen: React.FC<SendMoneyScreenProps> = ({ navigation, ro
   );
 };
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles((COLORS) => ({
   field: {
     marginBottom: SPACING.xl,
   },
@@ -635,7 +654,7 @@ const styles = StyleSheet.create({
   recipientCardTitle: {
     fontSize: FONT_SIZES.sm,
     fontWeight: '600',
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     textTransform: 'uppercase',
     letterSpacing: 0.5,
   },
@@ -650,7 +669,7 @@ const styles = StyleSheet.create({
   },
   recipientCardAddress: {
     fontSize: FONT_SIZES.sm,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     fontFamily: Platform.OS === 'ios' ? 'Courier' : 'monospace',
   },
   changeRecipientButton: {
@@ -663,4 +682,4 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     textDecorationLine: 'underline',
   },
-});
+}));

@@ -22,32 +22,82 @@ This project follows the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.
 3. Do not commit real secrets, Stellar secret seeds, service-role keys, production `.env` files, or private user data.
 4. Treat wallet, relayer, and transaction changes as security-sensitive.
 
-## Local Setup
+## Local Setup (Clone to Run)
 
-### Prerequisites
+To contribute code, you'll need to run both the mobile app and the backend relayer locally.
 
-- Node.js 18+
-- A Supabase project (for mobile/relayer changes)
+### 1. Prerequisites
+- **Node.js**: v18+ 
+- **Git**
+- **Supabase Account**: You need a free Supabase project to store profiles and transactions.
+- **Expo Go** app on your iOS/Android device, or an emulator.
 
-### Install Dependencies
+### 2. Supabase Project Setup
+
+The files in `supabase/migrations/` are the only database schema source. Do not
+apply a separate schema file or the migrations from another directory.
+
+Provision a fresh local database with one command from the repository root:
 
 ```bash
+supabase start
+```
+
+This starts the local Supabase stack and applies the complete root migration
+chain in filename order. Obtain the local Project URL, anon key, and service-role
+key from the command output.
+
+### 3. Environment Configuration
+Clone the repo and install dependencies:
+```bash
+git clone https://github.com/soumen0818/C-Pay.git
+cd C-Pay
+
 cd App && npm install
 cd ../relayer-service && npm install
 cd ../Blockchain && npm install
 ```
 
-### Environment Files
-
-Copy the example env files and fill in your own values:
-
+Copy the env files:
 ```bash
 cp App/.env.example App/.env
 cp relayer-service/.env.example relayer-service/.env
-cp Blockchain/.env.example Blockchain/.env
 ```
 
-**Never commit real `.env` files.** Use testnet values for local development. Never use production funds or production secret seeds in local files.
+**Edit `relayer-service/.env`**:
+- Set `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` to your Supabase project credentials.
+- Set `STELLAR_NETWORK=testnet`
+
+**Edit `App/.env`**:
+- Set `EXPO_PUBLIC_SUPABASE_URL` and `EXPO_PUBLIC_SUPABASE_ANON_KEY`.
+- Set `EXPO_PUBLIC_STELLAR_RELAYER_URL=http://YOUR_LOCAL_IP:3000` (Use your local network IP, e.g., `192.168.1.5`, not `localhost` so your phone can reach it).
+
+### 4. Running the Relayer Locally
+Start the backend service that handles Stellar transactions:
+```bash
+cd relayer-service
+npm start
+```
+The relayer should log that it is listening on port 3000.
+
+### 5. Running the App
+In a new terminal:
+```bash
+cd App
+npx expo start
+```
+Scan the QR code with the Expo Go app.
+
+### 6. Funding a Testnet Account
+When you create a wallet in the app, the relayer will automatically fund it using the Stellar Friendbot on testnet. 
+If you need manual testnet XLM for testing merchant accounts, you can use the [Stellar Laboratory](https://laboratory.stellar.org/#account-creator?network=test).
+
+### 7. "You're Set Up Correctly When..."
+You know your local environment is perfectly configured when:
+1. You can launch the app and create a new wallet.
+2. The relayer logs show successful Friendbot funding.
+3. Your Supabase `profiles` table shows a new row for your created user.
+4. You can send a payment and see it reflected in both the app UI and your Supabase `transactions` table.
 
 ## Running Checks
 

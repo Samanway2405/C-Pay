@@ -1,3 +1,4 @@
+import { Logger } from '../utils/logger';
 import * as Crypto from 'expo-crypto';
 import * as StellarSdk from '@stellar/stellar-base';
 import { xchacha20poly1305 } from '@noble/ciphers/chacha';
@@ -150,7 +151,7 @@ export async function createCloudWalletBackup(
     .upsert(row, { onConflict: 'auth_user_id' });
 
   if (error) {
-    console.error('Cloud wallet backup save error:', error);
+    Logger.error('Cloud wallet backup save error:', error);
     throw new Error('Cloud backup could not be saved. Make sure the wallet_backups SQL has been run in Supabase.');
   }
 }
@@ -164,7 +165,7 @@ export async function getCloudWalletBackup(): Promise<CloudWalletBackupRow | nul
     .maybeSingle();
 
   if (error) {
-    console.error('Cloud wallet backup fetch error:', error);
+    Logger.error('Cloud wallet backup fetch error:', error);
     throw new Error('Cloud backup could not be loaded.');
   }
 
@@ -214,7 +215,7 @@ export async function restoreCloudWalletBackup(
       walletAddress: restoredWalletAddress,
     };
   } catch (error) {
-    console.error('Cloud wallet backup decrypt error:', error);
+    Logger.error('Cloud wallet backup decrypt error:', error);
     throw new Error('Recovery password is incorrect or this cloud backup is damaged.');
   }
 }

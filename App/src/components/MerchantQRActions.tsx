@@ -1,7 +1,7 @@
 import React from 'react';
 import { View, Text, TouchableOpacity, StyleSheet, StyleProp, ViewStyle } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS } from '../constants/theme';
+import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS, createThemedStyles, useTheme } from '../constants/theme';
 import { A11Y } from '../utils/strings';
 
 export interface MerchantQRActionsProps {
@@ -21,30 +21,33 @@ export const MerchantQRActions: React.FC<MerchantQRActionsProps> = ({
   onDownload,
   onNew,
   style,
-}) => (
-  <View style={[styles.row, style]}>
-    <ActionButton
-      icon="share-social-outline"
-      label="Share"
-      accessibilityLabel={A11Y.SHARE}
-      onPress={onShare}
-    />
-    <ActionButton
-      icon="download-outline"
-      label="Download"
-      accessibilityLabel={A11Y.DOWNLOAD}
-      onPress={onDownload}
-    />
-    {onNew && (
+}) => {
+  useTheme();
+  return (
+    <View style={[styles.row, style]}>
       <ActionButton
-        icon="add-outline"
-        label="New QR"
-        accessibilityLabel="Create new QR code"
-        onPress={onNew}
+        icon="share-social-outline"
+        label="Share"
+        accessibilityLabel={A11Y.SHARE}
+        onPress={onShare}
       />
-    )}
-  </View>
-);
+      <ActionButton
+        icon="download-outline"
+        label="Download"
+        accessibilityLabel={A11Y.DOWNLOAD}
+        onPress={onDownload}
+      />
+      {onNew && (
+        <ActionButton
+          icon="add-outline"
+          label="New QR"
+          accessibilityLabel="Create new QR code"
+          onPress={onNew}
+        />
+      )}
+    </View>
+  );
+};
 
 const ActionButton: React.FC<{
   icon: keyof typeof Ionicons.glyphMap;
@@ -64,7 +67,7 @@ const ActionButton: React.FC<{
   </TouchableOpacity>
 );
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles((COLORS) => ({
   row: {
     flexDirection: 'row',
     gap: SPACING.sm,
@@ -88,4 +91,4 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: COLORS.primary,
   },
-});
+}));

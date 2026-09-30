@@ -10,8 +10,8 @@ const DEFAULT_RECONCILE_INTERVAL_MS = 30000; // 30 seconds
 class IngestWorker {
   constructor(options = {}) {
     this.horizonUrl = options.horizonUrl || process.env.STELLAR_HORIZON_URL || 'https://horizon-testnet.stellar.org';
-    this.assetCode = options.assetCode || process.env.CPINR_ASSET_CODE || 'CPINR';
-    this.assetIssuer = options.assetIssuer || process.env.CPINR_ASSET_ISSUER || '';
+    this.assetCode = options.assetCode || 'USDC';
+    this.assetIssuer = options.assetIssuer || process.env.USDC_ASSET_ISSUER || '';
     this.supabaseUrl = (options.supabaseUrl || process.env.SUPABASE_URL || '').replace(/\/+$/, '');
     this.supabaseServiceRoleKey = options.supabaseServiceRoleKey || process.env.SUPABASE_SERVICE_ROLE_KEY || '';
     this.cursorKey = options.cursorKey || DEFAULT_CURSOR_KEY;
@@ -339,7 +339,7 @@ class IngestWorker {
       fromAddress = op.from || op.source_account || '';
       toAddress = op.to || '';
       amount = op.amount || '0';
-      assetCode = op.asset_type === 'native' ? 'XLM' : (op.asset_code || 'CPINR');
+      assetCode = op.asset_type === 'native' ? 'XLM' : (op.asset_code || 'USDC');
       assetIssuer = op.asset_issuer || null;
     } else if (op.type === 'create_account') {
       fromAddress = op.funder || op.source_account || '';
@@ -351,7 +351,7 @@ class IngestWorker {
       fromAddress = op.from || op.source_account || '';
       toAddress = op.to || '';
       amount = op.amount || op.dest_amount || '0';
-      assetCode = op.asset_type === 'native' ? 'XLM' : (op.asset_code || 'CPINR');
+      assetCode = op.asset_type === 'native' ? 'XLM' : (op.asset_code || 'USDC');
       assetIssuer = op.asset_issuer || null;
     } else {
       return null;

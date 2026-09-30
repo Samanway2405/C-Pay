@@ -11,7 +11,7 @@ import {
   Platform,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS } from '../../constants/theme';
+import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS, createThemedStyles, useTheme } from '../../constants/theme';
 
 export interface FormFieldAction {
   icon: keyof typeof Ionicons.glyphMap;
@@ -61,6 +61,7 @@ export const FormField = forwardRef<TextInput, FormFieldProps>(
     },
     ref
   ) => {
+  useTheme();
     const [focused, setFocused] = React.useState(false);
     const hasError = !!error;
 
@@ -141,7 +142,7 @@ export const FormField = forwardRef<TextInput, FormFieldProps>(
 
 FormField.displayName = 'FormField';
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles((COLORS) => ({
   label: {
     fontSize: FONT_SIZES.md,
     fontWeight: '600',
@@ -194,10 +195,10 @@ const styles = StyleSheet.create({
   },
   helper: {
     fontSize: FONT_SIZES.sm,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     marginTop: SPACING.xs,
   },
   error: {
     color: COLORS.error,
   },
-});
+}));

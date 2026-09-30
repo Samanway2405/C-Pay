@@ -9,4 +9,11 @@ export const supabase = {
     update: jest.fn().mockReturnThis(),
   })),
   rpc: jest.fn().mockResolvedValue({ data: [], error: null }),
+  auth: {
+    getSession: jest.fn().mockResolvedValue({ data: { session: null }, error: null }),
+    getUser: jest.fn().mockResolvedValue({ data: { user: null }, error: null }),
+    signInWithOtp: jest.fn().mockResolvedValue({ data: {}, error: null }),
+    verifyOtp: jest.fn().mockResolvedValue({ data: { user: null }, error: null }),
+    signOut: jest.fn().mockResolvedValue({ error: null }),
+  },
 };

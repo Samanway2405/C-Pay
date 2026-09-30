@@ -17,3 +17,5 @@ export type { MerchantQRActionsProps } from './MerchantQRActions';
 
 // Reusable layout primitives (screen/component design system)
 export * from './layout';
+
+export * from './InitialAvatar';

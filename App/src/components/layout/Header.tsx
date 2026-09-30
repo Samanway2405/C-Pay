@@ -9,7 +9,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { COLORS, SPACING, FONT_SIZES, SHADOWS } from '../../constants/theme';
+import { COLORS, SPACING, FONT_SIZES, SHADOWS, createThemedStyles, useTheme } from '../../constants/theme';
 
 export interface HeaderAction {
   icon: keyof typeof Ionicons.glyphMap;
@@ -55,6 +55,7 @@ export const Header: React.FC<HeaderProps> = ({
   backgroundColor = 'transparent',
   style,
 }) => {
+  useTheme();
   const insets = useSafeAreaInsets();
   const paddingTop = (applyTopInset ? insets.top : 0) + SPACING.sm;
 
@@ -130,7 +131,7 @@ export const Header: React.FC<HeaderProps> = ({
   );
 };
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles((COLORS) => ({
   container: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -180,7 +181,7 @@ const styles = StyleSheet.create({
   },
   subtitle: {
     fontSize: FONT_SIZES.sm,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     marginTop: 2,
   },
   badge: {
@@ -192,4 +193,4 @@ const styles = StyleSheet.create({
     borderRadius: 4,
     backgroundColor: COLORS.error,
   },
-});
+}));

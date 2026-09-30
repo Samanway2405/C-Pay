@@ -9,7 +9,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS } from '../../constants/theme';
+import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS, createThemedStyles, useTheme } from '../../constants/theme';
 import { Button } from '../Button';
 
 export type StatusSheetVariant = 'loading' | 'success' | 'error' | 'warning' | 'info';
@@ -31,15 +31,15 @@ export interface StatusSheetProps {
   onRequestClose?: () => void;
 }
 
-const VARIANT: Record<
+const getVariants = (): Record<
   Exclude<StatusSheetVariant, 'loading'>,
   { icon: keyof typeof Ionicons.glyphMap; fg: string; bg: string }
-> = {
+> => ({
   success: { icon: 'checkmark-circle', fg: COLORS.success, bg: COLORS.successBg },
   error: { icon: 'close-circle', fg: COLORS.error, bg: COLORS.errorBg },
   warning: { icon: 'warning', fg: COLORS.warning, bg: COLORS.warningBg },
   info: { icon: 'information-circle', fg: COLORS.info, bg: COLORS.infoBg },
-};
+});
 
 /**
  * Bottom sheet for terminal/transient states: loading, success, error,
@@ -54,7 +54,9 @@ export const StatusSheet: React.FC<StatusSheetProps> = ({
   actions,
   onRequestClose,
 }) => {
+  useTheme();
   const insets = useSafeAreaInsets();
+  const variants = getVariants();
   const dismissable = !!onRequestClose;
 
   return (
@@ -104,11 +106,11 @@ export const StatusSheet: React.FC<StatusSheetProps> = ({
             </View>
           ) : (
             <View
-              style={[styles.iconBadge, { backgroundColor: VARIANT[variant].bg }]}
+              style={[styles.iconBadge, { backgroundColor: variants[variant].bg }]}
               accessibilityElementsHidden
               importantForAccessibility="no"
             >
-              <Ionicons name={VARIANT[variant].icon} size={40} color={VARIANT[variant].fg} />
+              <Ionicons name={variants[variant].icon} size={40} color={variants[variant].fg} />
             </View>
           )}
 
@@ -149,7 +151,7 @@ export const StatusSheet: React.FC<StatusSheetProps> = ({
   );
 };
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles((COLORS) => ({
   backdrop: {
     flex: 1,
     backgroundColor: COLORS.overlay,
@@ -186,7 +188,7 @@ const styles = StyleSheet.create({
   },
   message: {
     fontSize: FONT_SIZES.md,
-    color: COLORS.textSecondary,
+    color: COLORS.textMuted,
     textAlign: 'center',
     marginTop: SPACING.sm,
     lineHeight: 22,
@@ -198,4 +200,4 @@ const styles = StyleSheet.create({
   actionSpacing: {
     marginTop: SPACING.sm,
   },
-});
+}));

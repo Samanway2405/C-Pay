@@ -1,6 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import { Animated, View, StyleSheet } from 'react-native';
-import { COLORS } from '../constants/theme';
+import { COLORS, createThemedStyles, useTheme } from '../constants/theme';
 
 interface SuccessAnimationProps {
   visible: boolean;
@@ -11,6 +11,7 @@ export const SuccessAnimation: React.FC<SuccessAnimationProps> = ({
   visible,
   onComplete,
 }) => {
+  useTheme();
   const scaleAnim = useRef(new Animated.Value(0)).current;
   const opacityAnim = useRef(new Animated.Value(0)).current;
   const checkmarkAnim = useRef(new Animated.Value(0)).current;
@@ -80,7 +81,7 @@ export const SuccessAnimation: React.FC<SuccessAnimationProps> = ({
   );
 };
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles((COLORS) => ({
   container: {
     position: 'absolute',
     top: 0,
@@ -89,7 +90,7 @@ const styles = StyleSheet.create({
     bottom: 0,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    backgroundColor: COLORS.overlay,
     zIndex: 9999,
   },
   circle: {
@@ -105,4 +106,4 @@ const styles = StyleSheet.create({
     color: COLORS.textInverse,
     fontWeight: 'bold',
   },
-});
+}));

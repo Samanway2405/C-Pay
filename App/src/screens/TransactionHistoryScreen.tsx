@@ -1,3 +1,4 @@
+import { Logger } from '../utils/logger';
 import React, { useState, useEffect } from 'react';
 import {
   View,
@@ -11,7 +12,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import { getTransactions, Transaction } from '../services/storage';
 import { pollPendingTransactions } from '../services/transactionMonitor';
 import { supabase } from '../services/supabase';
-import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS, SHADOWS } from '../constants/theme';
+import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS, SHADOWS, createThemedStyles, useTheme } from '../constants/theme';
 import { TransactionItem, LoadingSpinner, EmptyState, TransactionDetailModal, Screen, Header } from '../components';
 
 interface TransactionHistoryScreenProps {
@@ -27,6 +28,7 @@ export const TransactionHistoryScreen: React.FC<TransactionHistoryScreenProps> =
   navigation,
   route,
 }) => {
+  useTheme();
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -55,7 +57,7 @@ export const TransactionHistoryScreen: React.FC<TransactionHistoryScreenProps> =
     }
 
     // Subscribe to real-time updates from Supabase
-    console.log('📡 Subscribing to real-time transaction updates...');
+// [SECURITY] Removed sensitive log: console.log('📡 Subscribing to real-time transaction updates...');
     
     const channel = supabase
       .channel('transactions_channel')
@@ -67,7 +69,7 @@ export const TransactionHistoryScreen: React.FC<TransactionHistoryScreenProps> =
           table: 'transactions' 
         },
         (payload) => {
-          console.log('🆕 New transaction received:', payload.new);
+// [SECURITY] Removed sensitive log: console.log('🆕 New transaction received:', payload.new);
           setTransactions((prev) => [payload.new as Transaction, ...prev]);
         }
       )
@@ -79,7 +81,7 @@ export const TransactionHistoryScreen: React.FC<TransactionHistoryScreenProps> =
           table: 'transactions' 
         },
         (payload) => {
-          console.log('🔄 Transaction updated:', payload.new);
+// [SECURITY] Removed sensitive log: console.log('🔄 Transaction updated:', payload.new);
           setTransactions((prev) =>
             prev.map((tx) =>
               tx.tx_hash === (payload.new as Transaction).tx_hash
@@ -90,19 +92,19 @@ export const TransactionHistoryScreen: React.FC<TransactionHistoryScreenProps> =
         }
       )
       .subscribe((status) => {
-        console.log('📡 Supabase subscription status:', status);
+        Logger.info('📡 Supabase subscription status:', status);
         if (status === 'SUBSCRIBED') {
           setRealtimeConnected(true);
-          console.log('✅ Real-time connection established');
+          Logger.info('✅ Real-time connection established');
         } else if (status === 'CLOSED') {
           setRealtimeConnected(false);
-          console.log('❌ Real-time connection closed');
+          Logger.info('❌ Real-time connection closed');
         }
       });
 
     // Cleanup subscription on unmount
     return () => {
-      console.log('📡 Unsubscribing from real-time updates...');
+      Logger.info('📡 Unsubscribing from real-time updates...');
       channel.unsubscribe();
     };
   }, []);
@@ -110,7 +112,7 @@ export const TransactionHistoryScreen: React.FC<TransactionHistoryScreenProps> =
   // Refresh transactions when screen comes into focus
   useFocusEffect(
     React.useCallback(() => {
-      console.log('🔄 TransactionHistory focused - refreshing');
+// [SECURITY] Removed sensitive log: console.log('🔄 TransactionHistory focused - refreshing');
       loadTransactions();
     }, [])
   );
@@ -127,7 +129,7 @@ export const TransactionHistoryScreen: React.FC<TransactionHistoryScreenProps> =
       const txs = await getTransactions();
       setTransactions(txs);
     } catch (error) {
-      console.error('Error loading transactions:', error);
+// [SECURITY] Removed sensitive log: console.error('Error loading transactions:', error);
     } finally {
       setLoading(false);
     }
@@ -140,7 +142,7 @@ export const TransactionHistoryScreen: React.FC<TransactionHistoryScreenProps> =
     await loadTransactions();
     
     // Manually poll pending transactions to update their status
-    console.log('🔄 Manual refresh: checking pending transactions...');
+// [SECURITY] Removed sensitive log: console.log('🔄 Manual refresh: checking pending transactions...');
     await pollPendingTransactions();
     
     setRefreshing(false);
@@ -219,7 +221,7 @@ export const TransactionHistoryScreen: React.FC<TransactionHistoryScreenProps> =
   );
 };
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles((COLORS) => ({
   liveIndicator: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -239,5 +241,4 @@ const styles = StyleSheet.create({
   listContent: {
     padding: SPACING.lg,
   },
-});
-
+}));

@@ -8,7 +8,7 @@ import {
   TextStyle,
   View,
 } from 'react-native';
-import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS, SHADOWS } from '../constants/theme';
+import { COLORS, SPACING, FONT_SIZES, BORDER_RADIUS, SHADOWS, createThemedStyles, useTheme } from '../constants/theme';
 
 interface ButtonProps {
   title: string;
@@ -39,6 +39,7 @@ export const Button: React.FC<ButtonProps> = ({
   accessibilityLabel,
   accessibilityHint,
 }) => {
+  useTheme();
   const isDisabled = disabled || loading;
 
   const buttonStyles = [
@@ -85,7 +86,7 @@ export const Button: React.FC<ButtonProps> = ({
   );
 };
 
-const styles = StyleSheet.create({
+const styles = createThemedStyles((COLORS) => ({
   button: {
     borderRadius: BORDER_RADIUS.lg,
     alignItems: 'center',
@@ -182,4 +183,4 @@ const styles = StyleSheet.create({
   textDisabled: {
     opacity: 0.7,
   },
-});
+}));

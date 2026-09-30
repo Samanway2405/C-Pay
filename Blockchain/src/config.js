@@ -15,6 +15,11 @@ const NETWORKS = {
   },
 };
 
+const USDC_ISSUERS = {
+  testnet: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
+  public: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
+};
+
 function getNetworkConfig() {
   const networkName = (process.env.STELLAR_NETWORK || 'testnet').toLowerCase();
   const preset = NETWORKS[networkName] || NETWORKS.testnet;
@@ -56,21 +61,26 @@ function assertTrustedHorizonUrl(horizonUrl) {
 }
 
 function getAssetConfig() {
+  const network = getNetworkConfig();
+  const expectedIssuer = network.name === 'public' ? USDC_ISSUERS.public : USDC_ISSUERS.testnet;
+  const issuer = process.env.USDC_ASSET_ISSUER || expectedIssuer;
+
+  if (issuer !== expectedIssuer) {
+    throw new Error(`USDC_ASSET_ISSUER must be Circle's canonical ${network.name} issuer`);
+  }
+
   return {
-    code: process.env.ASSET_CODE || 'CPINR',
-    issuer: process.env.ASSET_ISSUER_PUBLIC_KEY || '',
-    distribution: process.env.ASSET_DISTRIBUTION_PUBLIC_KEY || '',
-    initialSupply: process.env.INITIAL_SUPPLY || '1000000000',
+    code: 'USDC',
+    issuer,
+    distribution: process.env.DISTRIBUTION_PUBLIC_KEY || '',
     trustlineLimit: process.env.TRUSTLINE_LIMIT || '1000000000',
-    homeDomain: process.env.ASSET_HOME_DOMAIN || '',
-    lockIssuer: process.env.LOCK_ISSUER_AFTER_SETUP === 'true',
   };
 }
 
 function getAsset() {
   const { code, issuer } = getAssetConfig();
   if (!code || !issuer) {
-    throw new Error('ASSET_CODE and ASSET_ISSUER_PUBLIC_KEY are required');
+    throw new Error('Canonical Circle USDC configuration is required');
   }
 
   return new StellarSdk.Asset(code, issuer);
@@ -91,4 +101,5 @@ module.exports = {
   getNetworkConfig,
   getServer,
   requireEnv,
+  USDC_ISSUERS,
 };
