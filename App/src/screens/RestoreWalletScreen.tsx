@@ -1,4 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
+
+// Restore wallet screen: load a wallet from backup or secret recovery data.
 import {
   View,
   Text,

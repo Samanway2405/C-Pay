@@ -1,4 +1,6 @@
 import React, { useState } from 'react';
+
+// QR generator screen: creates payment requests and shareable wallet codes.
 import {
   View,
   Text,
