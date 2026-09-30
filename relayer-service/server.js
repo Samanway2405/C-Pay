@@ -6,6 +6,7 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const crypto = require('crypto');
 const StellarSdk = require('@stellar/stellar-sdk');
+const { createQuoteEngine } = require('./quote-engine');
 
 const app = express();
 const PORT = Number(process.env.PORT || 3000);
@@ -29,6 +30,24 @@ const USDC_ISSUERS = {
 };
 
 const config = loadConfig();
+const quoteEngine = createQuoteEngine({
+  rateProvider: {
+    async getRate({ from, to }) {
+      if (from === to) return 1;
+      const configuredRates = parseConfiguredQuoteRates();
+      const rate = configuredRates[`${from}_${to}`];
+      if (rate === undefined) {
+        const error = new Error(`No FX rate configured for ${from}/${to}`);
+        error.code = 'FX_RATE_UNAVAILABLE';
+        throw error;
+      }
+      return rate;
+    },
+  },
+  feeBps: config.quoteFeeBps,
+  spreadBps: config.quoteSpreadBps,
+  ttlSeconds: config.quoteTtlSeconds,
+});
 const server = new StellarSdk.Horizon.Server(config.horizonUrl, {
   allowHttp: config.horizonUrl.startsWith('http://'),
 });
@@ -71,6 +90,8 @@ app.get('/', (_req, res) => {
     health: '/health',
     endpoints: [
       'GET /health',
+      'POST /quotes',
+      'POST /quotes/validate',
       'GET /account/:accountId/status',
       'GET /account/:accountId/balance',
       'POST /accounts/prepare',
@@ -90,6 +111,28 @@ app.get('/ingest/health', (_req, res) => {
 // Keep the public probe free of infrastructure and account data.
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
+});
+
+app.post('/quotes', requireAuthenticatedUser, async (req, res) => {
+  try {
+    const quote = await quoteEngine.createQuote({
+      sendAmount: req.body.sendAmount,
+      sendCurrency: req.body.sendCurrency,
+      receiveCurrency: req.body.receiveCurrency,
+    });
+    res.status(201).json(quote);
+  } catch (error) {
+    const status = error.code === 'FX_RATE_UNAVAILABLE' ? 503 : 400;
+    res.status(status).json({ error: error.message, code: error.code || 'INVALID_QUOTE_REQUEST' });
+  }
+});
+
+app.post('/quotes/validate', requireAuthenticatedUser, (req, res) => {
+  try {
+    res.json(quoteEngine.assertFresh(req.body));
+  } catch (error) {
+    res.status(410).json({ error: error.message, code: error.code || 'QUOTE_EXPIRED' });
+  }
 });
 
 app.get('/health/detailed', requireAuthenticatedUser, async (_req, res) => {
@@ -692,7 +735,23 @@ function loadConfig() {
     ingestPollIntervalMs: Number(process.env.INGEST_POLL_INTERVAL_MS || 5000),
     ingestPendingTimeoutMs: Number(process.env.INGEST_PENDING_TIMEOUT_MS || 300000),
     ingestStartCursor: process.env.INGEST_START_CURSOR || null,
+    quoteFeeBps: Number(process.env.QUOTE_FEE_BPS || 175),
+    quoteSpreadBps: Number(process.env.QUOTE_SPREAD_BPS || 0),
+    quoteTtlSeconds: Number(process.env.QUOTE_TTL_SECONDS || 60),
   };
+}
+
+function parseConfiguredQuoteRates() {
+  const raw = process.env.QUOTE_FX_RATES_JSON || '{}';
+  try {
+    const rates = JSON.parse(raw);
+    if (!rates || typeof rates !== 'object' || Array.isArray(rates)) throw new Error('must be an object');
+    return rates;
+  } catch (error) {
+    const configError = new Error(`QUOTE_FX_RATES_JSON must be valid JSON: ${error.message}`);
+    configError.code = 'FX_RATE_UNAVAILABLE';
+    throw configError;
+  }
 }
 
 function readBooleanEnv(name, defaultValue) {
